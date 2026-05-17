@@ -101,7 +101,7 @@ type MergeStrategy int
 const (
 	// MergeShadow has the higher-precedence source replace the lower's value
 	// in its entirety. No structural merging of maps or slices. This is the
-	// default and what Viper does.
+	// default.
 	MergeShadow MergeStrategy = iota
 	// MergeAppend appends slices and deep-merges maps; scalar values still
 	// shadow.
@@ -155,9 +155,10 @@ func WithKeyDelimiter(d string) Option {
 	return func(o *registryOptions) { o.keyDelimiter = d }
 }
 
-// WithCaseInsensitive enables Viper-style case-insensitive key matching.
-// Off by default — recon prefers case-sensitive lookups so `Server.Port` and
-// `server.port` are distinct keys.
+// WithCaseInsensitive enables case-insensitive key matching. Off by
+// default — recon prefers case-sensitive lookups so `Server.Port` and
+// `server.port` are distinct keys. Opt in when migrating from a config
+// system that case-folds on lookup.
 func WithCaseInsensitive() Option {
 	return func(o *registryOptions) { o.caseSensitive = false }
 }

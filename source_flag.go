@@ -7,9 +7,9 @@ import (
 
 // FlagAdapter is the parser-agnostic seam between recon and whatever
 // command-line-flag library a caller uses. recon does NOT pick a flag
-// parser — stdlib `flag`, `spf13/pflag`, `alecthomas/kong`, rotini's
-// own argv parser, or anything else can satisfy the interface from
-// the caller's side.
+// parser — the stdlib `flag` package, rotini's own argv parser, or
+// any third-party flag library can satisfy the interface from the
+// caller's side.
 //
 // An adapter reports two things:
 //

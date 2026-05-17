@@ -24,8 +24,9 @@ body:
     attributes:
       label: Prior Art
       description: |
-        Does Viper / koanf / a config library you've used handle this? How?
-        Comparisons are welcome — they help calibrate the design.
+        Has a config library you've used handled this? How? Concrete
+        examples — code snippets, behavior tables, edge cases — are
+        the most useful; they help calibrate the design.
 
   - type: textarea
     id: alternatives

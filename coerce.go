@@ -145,7 +145,9 @@ func stringFromValueOrDie(v Value) string {
 
 // coerceString fills a string-kinded dest. Booleans / numbers / time
 // values flatten through fmt.Sprint so a YAML key with a numeric value
-// can still populate a `string` field — Viper compatibility.
+// can still populate a `string` field — this lenient projection
+// matches the broader expectation that `string` is a "give me
+// whatever, formatted" target rather than a strict type-match.
 func coerceString(v Value, dest reflect.Value) error {
 	switch v.Kind() {
 	case StringKind:

@@ -61,9 +61,10 @@ func (r *Registry) BindContext(ctx context.Context, target any, opts ...DecodeOp
 	return w.errs
 }
 
-// Unmarshal is an alias for [Registry.Bind] — provided for parity with
-// encoding/json (Unmarshal) and viper.Unmarshal naming so migration
-// from those libraries is a no-op for the verb.
+// Unmarshal is an alias for [Registry.Bind]. The name matches the
+// stdlib encoding-package convention (Marshal / Unmarshal) so the
+// verb is interchangeable with other decoder APIs callers may
+// already be using.
 func (r *Registry) Unmarshal(target any, opts ...DecodeOption) error {
 	return r.Bind(target, opts...)
 }
