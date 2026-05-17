@@ -32,6 +32,7 @@ type registryState struct {
 	closed    atomic.Bool
 	logger    *slog.Logger
 	opts      registryOptions
+	watch     *watchEngine
 }
 
 // Registry is the central data-in registry. Construct via [New]; safe for
@@ -100,6 +101,13 @@ func New(opts ...Option) (*Registry, error) {
 	}
 
 	r.rebuildAndReport()
+
+	// Start the watch engine while we still hold the lock so the source
+	// snapshot the engine subscribes to matches the snapshot the
+	// initial rebuild just installed.
+	r.state.watch = newWatchEngine(r)
+	r.state.watch.start()
+
 	r.state.mu.Unlock()
 
 	return r, addErr
@@ -113,6 +121,15 @@ func (r *Registry) Close() error {
 	var err error
 	r.state.closeOnce.Do(func() {
 		r.state.closed.Store(true)
+
+		// Stop the watch engine BEFORE closing sources — the engine
+		// holds source subscriptions and must release them through
+		// ctx cancellation, not through Source.Close racing with the
+		// in-flight subscription goroutine.
+		if r.state.watch != nil {
+			r.state.watch.stop()
+		}
+
 		r.state.mu.Lock()
 		defer r.state.mu.Unlock()
 		multi := &MultiError{}
@@ -126,6 +143,27 @@ func (r *Registry) Close() error {
 		}
 	})
 	return err
+}
+
+// Events returns the channel reload events are delivered on. Each
+// reload — successful or failed — produces one [Event]; failures
+// retain the previous snapshot (the live config keeps working) and
+// surface via Event.Err. The channel is closed when the registry is
+// closed.
+//
+// The channel is buffered (capacity controlled by [WithEventBufferSize],
+// default 16). Slow consumers cause events to drop; the next
+// successfully-delivered Event carries a [DeprecationWarning] entry
+// describing the loss.
+//
+// Returns nil on a closed-before-construction registry — callers
+// reading from a nil channel block forever, the right shape for
+// "stop consuming events when the registry is gone".
+func (r *Registry) Events() <-chan Event {
+	if r.state.watch == nil {
+		return nil
+	}
+	return r.state.watch.events
 }
 
 // Reload re-reads every watched source and rebuilds the snapshot. Equivalent

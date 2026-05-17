@@ -116,6 +116,65 @@ func TestLiveReload_VirtualFSImmutable(t *testing.T) {
 	}
 }
 
+// TestLiveReload_AutomaticReloadViaWatchEngine is the Phase-8
+// strengthening of the harness: with the watch engine wired,
+// modifying a watched file MUST update the registry without any
+// manual r.Reload() call. The test asserts that Get returns the new
+// value purely as a consequence of the file change.
+func TestLiveReload_AutomaticReloadViaWatchEngine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "watched.yaml")
+	if err := writeAll(path, []byte("k: before\n")); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	src, err := YAMLSource(path)
+	if err != nil {
+		t.Fatalf("YAMLSource: %v", err)
+	}
+	r, err := New(
+		WithWatcher(NewPollWatcher(40*time.Millisecond)),
+		WithReloadDebounce(30*time.Millisecond),
+		WithSource(src),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+
+	if s, _, _ := r.GetString("k"); s != "before" {
+		t.Fatalf("initial k=%q, want before", s)
+	}
+
+	time.Sleep(100 * time.Millisecond) // watcher baseline
+	tmp := path + ".tmp"
+	if err := writeAll(tmp, []byte("k: after\n")); err != nil {
+		t.Fatalf("write tmp: %v", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	// Wait for the Event the engine emits.
+	select {
+	case evt, ok := <-r.Events():
+		if !ok {
+			t.Fatal("Events channel closed")
+		}
+		if evt.Err != nil {
+			t.Fatalf("evt.Err=%v", evt.Err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("watch engine did not emit a reload event within 2s")
+	}
+
+	// And — crucially — Get must observe the new value WITHOUT
+	// having to call r.Reload().
+	if s, _, _ := r.GetString("k"); s != "after" {
+		t.Fatalf("post-auto-reload k=%q, want after", s)
+	}
+}
+
 // TestLiveReload_WatcherInjectedByRegistry verifies that the registry
 // threads its [WatcherFactory] into newly-added [FileSource] instances
 // that did not get a per-source factory of their own.
