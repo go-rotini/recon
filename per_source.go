@@ -152,6 +152,15 @@ func PerSourceFor[T any](r *Registry, key string) (PerSource[T], error) {
 	return out, nil
 }
 
+// PerSourceForPath is the explicit-path twin of [PerSourceFor].
+// Used when the caller already has a [Path] in hand and wants to
+// skip the [ParsePath] step — useful when the path contains
+// segments with embedded delimiters that bracket-escaping would
+// otherwise mangle.
+func PerSourceForPath[T any](r *Registry, p Path) (PerSource[T], error) {
+	return PerSourceFor[T](r, p.String())
+}
+
 // snapshotAliases returns a copy of the registry's alias map under
 // lock. Used by [PerSourceFor] to follow alias chains without
 // holding the mutex during the actual per-source enumeration.

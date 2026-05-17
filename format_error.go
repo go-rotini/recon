@@ -23,24 +23,59 @@ import (
 //
 // FormatError returns "" when err is nil so it composes cleanly with
 // log.Println.
-func FormatError(reg *Registry, err error) string {
+//
+// Optional color: pass a single true to opt into ANSI-colorized
+// output (red error markers, dim path prefixes). The default is
+// uncolored so the output is safe for log files / non-terminal
+// consumers. Callers that always want color can use
+// [FormatErrorColor].
+func FormatError(reg *Registry, err error, color ...bool) string {
 	if err == nil {
 		return ""
 	}
+	wantColor := len(color) > 0 && color[0]
 	var multi *MultiError
 	if errors.As(err, &multi) && multi != nil && len(multi.Errors) > 0 {
 		var b strings.Builder
-		fmt.Fprintf(&b, "recon: %d errors:\n", len(multi.Errors))
+		header := fmt.Sprintf("recon: %d errors:", len(multi.Errors))
+		b.WriteString(applyColor(header, wantColor, ansiBold))
+		b.WriteByte('\n')
 		for _, sub := range multi.Errors {
-			b.WriteString("  • ")
+			b.WriteString("  ")
+			b.WriteString(applyColor("•", wantColor, ansiRed))
+			b.WriteByte(' ')
 			b.WriteString(formatOneError(reg, sub))
 			b.WriteByte('\n')
 		}
-		// Trim the trailing newline so callers can append context.
 		return strings.TrimRight(b.String(), "\n")
 	}
-	return "recon: " + formatOneError(reg, err)
+	return applyColor("recon:", wantColor, ansiRed) + " " + formatOneError(reg, err)
 }
+
+// FormatErrorColor is a sugar wrapper for [FormatError] with ANSI
+// colorization always on. Intended for `myapp config validate`
+// CLI subcommands that write to a TTY.
+func FormatErrorColor(reg *Registry, err error) string {
+	return FormatError(reg, err, true)
+}
+
+// applyColor wraps s in the supplied ANSI code when enabled is
+// true; otherwise returns s untouched. The single-allocation path
+// keeps the no-color hot path fast.
+func applyColor(s string, enabled bool, code string) string {
+	if !enabled {
+		return s
+	}
+	return code + s + ansiReset
+}
+
+// ANSI sequence constants. Kept centralized so future style tweaks
+// (different reds, blue paths, etc.) live in one place.
+const (
+	ansiReset = "\x1b[0m"
+	ansiBold  = "\x1b[1m"
+	ansiRed   = "\x1b[31m"
+)
 
 // formatOneError formats a single error. Typed errors that carry a
 // Path or Source field get extra context; everything else falls

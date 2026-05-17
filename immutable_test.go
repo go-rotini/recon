@@ -62,10 +62,11 @@ func TestImmutable_ManualReloadReturnsError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Mutate the underlying explicit value out from under the
-	// immutable baseline; Reload should surface the violation.
-	_ = r.Set("tier", "staging")
-	err := r.Reload()
+	// Set on an immutable key whose baseline was established must
+	// fail at the Set call site — the candidate snapshot the
+	// transactional rebuild would install differs from the baseline,
+	// so the rebuild rejects the candidate and Set rolls back.
+	err := r.Set("tier", "staging")
 	if !errors.Is(err, ErrImmutableChanged) {
 		t.Fatalf("err=%v, want wrap of ErrImmutableChanged", err)
 	}
@@ -75,6 +76,12 @@ func TestImmutable_ManualReloadReturnsError(t *testing.T) {
 	}
 	if ice.Path.String() != "tier" {
 		t.Fatalf("Path=%s, want tier", ice.Path)
+	}
+
+	// Roll-back semantic: the resolved value stays at the baseline.
+	v, _, _ := r.Get("tier")
+	if s, _ := v.AsString(); s != "prod" {
+		t.Fatalf("tier=%q after rejected Set, want prod", s)
 	}
 }
 
@@ -89,8 +96,7 @@ func TestImmutable_SecretsRedactedInError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_ = r.Set("token", "newvalue")
-	err := r.Reload()
+	err := r.Set("token", "newvalue")
 	var ice *ImmutableChangedError
 	if !errors.As(err, &ice) {
 		t.Fatalf("err=%v, want *ImmutableChangedError", err)
@@ -111,20 +117,21 @@ func TestImmutable_BaselineSetOnceOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A second Bind after a value change must NOT silently update
-	// the baseline — the violation should already be there.
-	_ = r.Set("tier", "staging")
-	// Bind fails because the schema rebuild fails the immutable
-	// check during the snapshot install Bind triggers... actually
-	// Bind doesn't trigger a rebuild. We just rebaseline issue is
-	// what's being tested. Explicitly Reload to surface.
-	if err := r.Reload(); !errors.Is(err, ErrImmutableChanged) {
-		t.Fatalf("Reload err=%v, want wrap of ErrImmutableChanged", err)
+	// Attempted Set to a different value must fail (baseline
+	// established).
+	if err := r.Set("tier", "staging"); !errors.Is(err, ErrImmutableChanged) {
+		t.Fatalf("Set err=%v, want wrap of ErrImmutableChanged", err)
 	}
 
-	// Confirm second Bind doesn't reset the baseline.
-	_ = r.Bind(&c) // value still differs but baseline is preserved
-	if err := r.Reload(); !errors.Is(err, ErrImmutableChanged) {
+	// A second Bind must NOT silently update the baseline — even
+	// though Bind tries to call markImmutable on the field, the
+	// baseline is set-once, so the original value still anchors.
+	// Re-binding with the same struct should be a no-op for the
+	// baseline map.
+	if err := r.Bind(&c); err != nil {
+		t.Fatalf("second Bind: %v", err)
+	}
+	if err := r.Set("tier", "staging"); !errors.Is(err, ErrImmutableChanged) {
 		t.Fatalf("baseline reset after second Bind: %v", err)
 	}
 }

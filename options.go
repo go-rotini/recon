@@ -19,9 +19,9 @@ type registryOptions struct {
 	initialSources []Source
 	precedence     []string // explicit order by source name, when set
 
-	// Key handling
-	keyDelimiter  string
-	caseSensitive bool
+	// Key handling — recon keys use [DefaultDelimiter] uniformly
+	// and lookups are case-sensitive. The keyNormalizer hook is the
+	// only knob; it runs against every Path before resolution.
 	keyNormalizer func(Path) Path
 
 	// Decoding / strictness
@@ -63,8 +63,6 @@ type registryOptions struct {
 // §2.5, and §4.15 of the requirements doc.
 func defaultRegistryOptions() registryOptions {
 	return registryOptions{
-		keyDelimiter:   DefaultDelimiter,
-		caseSensitive:  true,
 		errorBehavior:  FailCollect,
 		reloadDebounce: 50 * time.Millisecond,
 		eventBufSize:   16,
@@ -148,19 +146,6 @@ func WithSources(s ...Source) Option {
 // on option ordering.
 func WithPrecedence(order ...string) Option {
 	return func(o *registryOptions) { o.precedence = append([]string(nil), order...) }
-}
-
-// WithKeyDelimiter overrides the registry-wide path delimiter. Default: ".".
-func WithKeyDelimiter(d string) Option {
-	return func(o *registryOptions) { o.keyDelimiter = d }
-}
-
-// WithCaseInsensitive enables case-insensitive key matching. Off by
-// default — recon prefers case-sensitive lookups so `Server.Port` and
-// `server.port` are distinct keys. Opt in when migrating from a config
-// system that case-folds on lookup.
-func WithCaseInsensitive() Option {
-	return func(o *registryOptions) { o.caseSensitive = false }
 }
 
 // WithKeyNormalizer installs a transform applied to every Path before it

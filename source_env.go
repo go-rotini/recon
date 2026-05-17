@@ -9,68 +9,90 @@ import (
 	"github.com/go-rotini/env"
 )
 
-// OSEnvSource is a [Source] backed by the process environment. Lookups
-// go through [env.OSEnv] (the sibling env package's OS source), so any
-// behavior that package documents (case-folding on Windows, key-shape
-// rejection, etc.) applies here transparently.
+// OSEnvSource is a [Source] backed by the process environment. It
+// projects every [Path] lookup through a [KeyTransform] (default:
+// [SnakeUpperTransform], with [WithEnvPrefix] producing
+// [SnakeUpperPrefixTransform]) so a registry key of `server.port`
+// reads the `SERVER_PORT` env var — the canonical 12-factor mapping.
 //
-// Values are surfaced as [StringKind] — env vars are always strings on
-// the wire; typed coercion happens at the [Registry] level when a caller
+// Values surface as [StringKind] — env vars are always strings on the
+// wire; typed coercion happens at the [Registry] level when a caller
 // asks for an int / duration / bool.
 //
-// A prefix filter ([WithEnvPrefix]) limits the source to env vars whose
-// name starts with the supplied string; the prefix is NOT stripped from
-// keys, so a caller wanting `APP_PORT` to surface as `port` should pair
-// this with [Registry.RegisterAlias] or a sub-view rewrite.
+// A custom transform via [WithEnvTransform] overrides the default; an
+// inverse parser via [WithEnvKeyParser] tells Keys() how to project
+// env-var names back into [Path] space (the default for snake-upper
+// uses [parseSnakeUpper], a lossy inversion that splits every
+// underscore as a separator).
 type OSEnvSource struct {
-	prefix string
-	src    env.Source
+	prefix    string
+	transform KeyTransform
+	parse     func(name string) Path
+	src       env.Source
 
 	mu     sync.RWMutex
-	keys   []Path // cached on first Keys() call; refreshed by Refresh
+	keys   []Path
 	cached bool
 }
 
-// NewOSEnvSource constructs an [OSEnvSource]. Options are limited to
-// [WithEnvPrefix] in Phase 4.
+// NewOSEnvSource constructs an [OSEnvSource]. Defaults:
+//
+//   - transform: [SnakeUpperTransform] (or [SnakeUpperPrefixTransform]
+//     when [WithEnvPrefix] is set).
+//   - parser: snake-upper inverse — every underscore is a separator.
+//
+// Both are configurable per source via [WithEnvTransform] and
+// [WithEnvKeyParser]; the defaults match the 12-factor expectation.
 func NewOSEnvSource(opts ...EnvOption) *OSEnvSource {
 	cfg := envOptions{}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	transform := cfg.transform
+	if transform == nil {
+		transform = SnakeUpperPrefixTransform(cfg.prefix)
+	}
+	parser := cfg.parser
+	if parser == nil {
+		parser = func(name string) Path { return parseSnakeUpper(name, cfg.prefix) }
+	}
 	return &OSEnvSource{
-		prefix: cfg.prefix,
-		src:    env.OSEnv(),
+		prefix:    cfg.prefix,
+		transform: transform,
+		parse:     parser,
+		src:       env.OSEnv(),
 	}
 }
 
-// Name reports the source's identifier. Fixed to "osenv" for parity with
-// other sources' single-token names.
+// Name reports the source's identifier. Fixed to "osenv".
 func (s *OSEnvSource) Name() string { return "osenv" }
 
-// Get looks up path[0] (env vars are flat — multi-segment paths are not
-// part of the env-var addressing model) in the process environment. A
-// prefix-mismatched key returns (Value{}, false, nil); the source never
-// fabricates env vars that aren't actually present.
+// Get projects path through the source's [KeyTransform] and looks
+// the resulting env-var name up in the process environment. A path
+// that projects to an unset env var returns (Value{}, false, nil);
+// the source never fabricates env vars that aren't actually present.
 func (s *OSEnvSource) Get(path Path) (Value, bool, error) {
-	if len(path) != 1 {
+	if len(path) == 0 {
 		return Value{}, false, nil
 	}
-	key := path[0]
-	if s.prefix != "" && !strings.HasPrefix(key, s.prefix) {
+	name := s.transform(path)
+	if name == "" {
 		return Value{}, false, nil
 	}
-	val, ok := s.src.Lookup(key)
+	val, ok := s.src.Lookup(name)
 	if !ok {
 		return Value{}, false, nil
 	}
 	return NewValue(val), true, nil
 }
 
-// Keys enumerates every env var visible to the source. The result is
-// cached after the first call; invoke [OSEnvSource.Refresh] to pick up
-// env-var additions or deletions (rare during a running process, but
-// supported for the `setenv` test pattern).
+// Keys enumerates the paths the source has cached. Each env var the
+// source sees is run through the inverse parser to produce a [Path];
+// the prefix (when set) is stripped before parsing.
+//
+// First-call enumerates os.Environ; subsequent calls return the
+// cached set. Invoke [OSEnvSource.Refresh] to pick up env-var
+// additions or deletions.
 func (s *OSEnvSource) Keys() []Path {
 	s.mu.RLock()
 	if s.cached {
@@ -93,9 +115,11 @@ func (s *OSEnvSource) Keys() []Path {
 // Close is a no-op — [OSEnvSource] holds no resources.
 func (s *OSEnvSource) Close() error { return nil }
 
-// Refresh re-scans os.Environ to pick up env vars that were created or
-// removed after construction. Returns the new key count for the
-// caller's diagnostic logging.
+// Refresh re-scans os.Environ to pick up env-var additions or
+// deletions. Returns the new key count for diagnostic logging.
+//
+// The watch engine's [WithPoll] option drives Refresh on a timer
+// when the registry's reload-engine wants live OS-env coverage.
 func (s *OSEnvSource) Refresh() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -104,8 +128,10 @@ func (s *OSEnvSource) Refresh() int {
 	return len(s.keys)
 }
 
-// collectKeys walks os.Environ once, applying the prefix filter. The
-// caller must hold s.mu.
+// collectKeys walks os.Environ once, filters by prefix, parses each
+// env-var name back into a [Path], and returns the sorted result.
+// The caller MUST hold s.mu (or call from a context where the cache
+// is being initialized).
 func (s *OSEnvSource) collectKeys() []Path {
 	envvars := os.Environ()
 	out := make([]Path, 0, len(envvars))
@@ -114,11 +140,15 @@ func (s *OSEnvSource) collectKeys() []Path {
 		if eq <= 0 {
 			continue
 		}
-		key := kv[:eq]
-		if s.prefix != "" && !strings.HasPrefix(key, s.prefix) {
+		name := kv[:eq]
+		if s.prefix != "" && !strings.HasPrefix(name, s.prefix) {
 			continue
 		}
-		out = append(out, MakePath(key))
+		p := s.parse(name)
+		if len(p) == 0 {
+			continue
+		}
+		out = append(out, p)
 	}
 	slices.SortFunc(out, func(a, b Path) int {
 		switch {

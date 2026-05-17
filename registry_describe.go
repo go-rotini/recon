@@ -176,27 +176,41 @@ func (r *Registry) DescribeKey(key string) (KeyDescription, bool) {
 	}, true
 }
 
-// MarkSecret records key as containing sensitive data. Subsequent
-// [Registry.Describe] / [Registry.DescribeKey] calls redact the
-// value via the configured [WithSecretRedactor] (default "***"), and
-// [Registry.Save] omits the key entirely unless
-// [WithSaveIncludeSecrets] is set.
+// MarkSecret records key as containing sensitive data. The current
+// snapshot is rebuilt so [Snapshot.String], [Registry.Describe],
+// [Registry.Save], and any downstream rendering all see the updated
+// secret set immediately.
 //
+// Subsequent reads via [Snapshot.IsSecret] reflect the new mark.
 // MarkSecret is idempotent. Calls with an empty key are ignored —
 // recon's secret system is path-keyed and rejects the empty path as
 // a safety measure against accidentally marking the entire registry
 // secret.
+//
+// A MarkSecret on a closed registry is a silent no-op. A rebuild
+// failure (immutable / validator) is logged via the registry's
+// logger but does not surface — MarkSecret's contract is "mark this
+// path; don't fail" because the typical caller is a Bind walker
+// emitting the side effect during a struct walk.
 func (r *Registry) MarkSecret(key string) {
 	if key == "" {
 		return
 	}
+	if r.state.closed.Load() {
+		return
+	}
 	fullKey := r.fullKey(key)
 	r.state.mu.Lock()
-	defer r.state.mu.Unlock()
 	if r.state.secretKeys == nil {
 		r.state.secretKeys = map[string]struct{}{}
 	}
 	r.state.secretKeys[fullKey] = struct{}{}
+	rebuildErr := r.rebuildSnapshotLocked()
+	r.state.mu.Unlock()
+	if rebuildErr != nil {
+		r.state.logger.Warn("recon: MarkSecret rebuild rejected",
+			"key", fullKey, "err", rebuildErr)
+	}
 }
 
 // IsSecret reports whether key has been marked secret via

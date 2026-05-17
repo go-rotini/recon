@@ -179,14 +179,19 @@ func (e *EmptyValueError) Is(target error) bool {
 	return false
 }
 
-// CoercionError reports that a wire value could not be converted to the
-// target Go type.
+// CoercionError reports that a wire value could not be converted to
+// the target Go type. When Secret is true, the underlying Cause is
+// suppressed from the rendered output so the caller's logs / error
+// channels never see the offending value — typical underlying causes
+// quote the value verbatim ("invalid syntax: \"hunter2\"") and the
+// secret-tag contract is that the value must never leave the registry.
 type CoercionError struct {
 	Path     Path
 	Source   string
 	WireType string
 	Target   string
 	Cause    error
+	Secret   bool
 }
 
 func (e *CoercionError) Error() string {
@@ -195,7 +200,11 @@ func (e *CoercionError) Error() string {
 		base += fmt.Sprintf(" (source %q)", e.Source)
 	}
 	if e.Cause != nil {
-		base += ": " + e.Cause.Error()
+		if e.Secret {
+			base += ": [redacted]"
+		} else {
+			base += ": " + e.Cause.Error()
+		}
 	}
 	return base
 }
@@ -276,17 +285,26 @@ func (e *AliasCycleError) Is(target error) bool {
 }
 
 // ValidationError reports that a SchemaValidator rejected a key.
+// When Secret is true, the Msg is replaced by "[redacted]" — a
+// validator's failure messages often quote the offending value
+// ("\"hunter2\" does not match pattern …") and the secret-tag
+// contract is that the value must never reach the caller's log.
 type ValidationError struct {
-	Path Path
-	Rule string
-	Msg  string
+	Path   Path
+	Rule   string
+	Msg    string
+	Secret bool
 }
 
 func (e *ValidationError) Error() string {
-	if e.Rule != "" {
-		return fmt.Sprintf("recon: validation %s [%s]: %s", e.Path, e.Rule, e.Msg)
+	msg := e.Msg
+	if e.Secret {
+		msg = "[redacted]"
 	}
-	return fmt.Sprintf("recon: validation %s: %s", e.Path, e.Msg)
+	if e.Rule != "" {
+		return fmt.Sprintf("recon: validation %s [%s]: %s", e.Path, e.Rule, msg)
+	}
+	return fmt.Sprintf("recon: validation %s: %s", e.Path, msg)
 }
 
 func (e *ValidationError) Is(target error) bool {

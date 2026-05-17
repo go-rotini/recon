@@ -56,7 +56,9 @@ type (
 	}
 
 	envOptions struct {
-		prefix string
+		prefix    string
+		transform KeyTransform
+		parser    func(name string) Path
 	}
 
 	flagOptions struct {
@@ -136,10 +138,50 @@ func WithStdinCodec(c Codec) StdinOption {
 	return func(o *stdinOptions) { o.codec = c }
 }
 
-// WithEnvPrefix limits an [OSEnvSource] to environment variables whose name
-// starts with prefix (e.g., "APP_" → only `APP_*` vars are visible).
+// WithEnvPrefix limits an [OSEnvSource] to environment variables
+// whose name starts with prefix (e.g., "APP_" → only `APP_*` vars
+// are visible). The default key transform projects path
+// `server.port` to `APP_SERVER_PORT` when prefix is `APP_`.
 func WithEnvPrefix(prefix string) EnvOption {
 	return func(o *envOptions) { o.prefix = prefix }
+}
+
+// WithEnvTransform overrides the default path → env-var-name
+// projection. Pair with [WithEnvKeyParser] to teach the source how
+// to project env-var names back into paths for [OSEnvSource.Keys].
+//
+// A nil transform is silently ignored; the default
+// [SnakeUpperPrefixTransform] is retained.
+//
+// Example — keep the recon path verbatim (no case-folding, no
+// underscore-mapping):
+//
+//	r, _ := recon.New(recon.WithSource(recon.NewOSEnvSource(
+//	    recon.WithEnvTransform(recon.IdentityTransform),
+//	    recon.WithEnvKeyParser(recon.ParsePath),
+//	)))
+func WithEnvTransform(fn KeyTransform) EnvOption {
+	return func(o *envOptions) {
+		if fn != nil {
+			o.transform = fn
+		}
+	}
+}
+
+// WithEnvKeyParser overrides the default env-var-name → [Path]
+// projection used by [OSEnvSource.Keys] when enumerating the
+// process environment. The supplied parser receives the env-var
+// name (post-prefix-strip when a prefix is set); returning an empty
+// Path causes the variable to be skipped from the source's keys.
+//
+// A nil parser is silently ignored; the default snake-upper inverse
+// is retained.
+func WithEnvKeyParser(fn func(name string) Path) EnvOption {
+	return func(o *envOptions) {
+		if fn != nil {
+			o.parser = fn
+		}
+	}
 }
 
 // WithFlagName overrides the default source name ("flags") a

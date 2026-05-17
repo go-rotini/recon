@@ -302,13 +302,16 @@ func expandAndAbs(path string, expand bool) (string, error) {
 	return abs, nil
 }
 
-// expandPath applies POSIX-style `~` / `$VAR` expansion via go-rotini/fs.
+// expandPath applies POSIX-shell-style expansion to p via
+// [expandShellPath] — tilde forms (`~`, `~user`), bare and braced
+// env-var references, and the `${VAR-def}` / `${VAR:-def}` /
+// `${VAR:?msg}` / `${VAR:+alt}` / `${VAR+alt}` POSIX modifiers.
 // A disabled-expansion call returns p unchanged.
 func expandPath(p string, enabled bool) (string, error) {
 	if !enabled {
 		return p, nil
 	}
-	out, err := rotinifs.Expand(p)
+	out, err := expandShellPath(p)
 	if err != nil {
 		return "", fmt.Errorf("recon: expand %q: %w", p, err)
 	}

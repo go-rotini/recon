@@ -3,6 +3,7 @@ package recon
 import (
 	"fmt"
 	"maps"
+	"reflect"
 	"time"
 )
 
@@ -353,11 +354,58 @@ type RawValue struct {
 	Data   []byte
 }
 
-// Decode parses RawValue into v using a Codec resolved from the package-level
-// default Codecs registry. The implementation lands once the [Codec] registry
-// + codec implementations are in place (Phase 4 of the implementation plan).
-// Until then the method exists to fix its signature; callers should resolve a
-// codec explicitly via [Codecs.ByName] and call [Codec.Decode] themselves.
-func (rv RawValue) Decode(_ any) error {
-	return fmt.Errorf("%w: RawValue.Decode not yet implemented (Phase 4)", ErrUnsupportedFormat)
+// Decode parses RawValue's bytes through the codec named by
+// [RawValue.Format], looking the codec up in the package-level
+// [DefaultCodecs] set, and assigns the result into v. v MUST be a
+// non-nil pointer:
+//
+//   - A `*map[string]any` (or `*any`) target receives the codec's
+//     decoded payload directly.
+//   - A `*Value` target receives the payload wrapped via
+//     [NewValue].
+//   - A pointer to a struct triggers a one-shot struct walk over
+//     the decoded map (same rules the bind walker's `format=` tag
+//     uses).
+//
+// Returns a wrapped [ErrUnsupportedFormat] when no codec is
+// registered under rv.Format. Codec-decode errors propagate
+// untouched.
+func (rv RawValue) Decode(v any) error {
+	if v == nil {
+		return fmt.Errorf("%w: RawValue.Decode: nil target", ErrInvalidPath)
+	}
+	codecs := DefaultCodecs()
+	c, ok := codecs.ByName(rv.Format)
+	if !ok {
+		return fmt.Errorf("%w: no codec registered for format %q",
+			ErrUnsupportedFormat, rv.Format)
+	}
+	decoded, err := c.Decode(rv.Data)
+	if err != nil {
+		return fmt.Errorf("recon: RawValue.Decode (%s): %w", rv.Format, err)
+	}
+	switch dst := v.(type) {
+	case *map[string]any:
+		*dst = decoded
+		return nil
+	case *any:
+		*dst = decoded
+		return nil
+	case *Value:
+		*dst = NewValue(decoded)
+		return nil
+	}
+	// Struct pointer: use the same MapKind → struct walker as the
+	// `format=` tag path.
+	rv2 := reflect.ValueOf(v)
+	if rv2.Kind() != reflect.Pointer || rv2.IsNil() {
+		return fmt.Errorf("%w: RawValue.Decode: %T is not a supported target",
+			ErrInvalidPath, v)
+	}
+	elem := rv2.Elem()
+	if elem.Kind() != reflect.Struct {
+		return fmt.Errorf("%w: RawValue.Decode: pointer must reference a struct, got %s",
+			ErrInvalidPath, elem.Type())
+	}
+	return coerceStructFromMap(NewValue(decoded), elem)
 }

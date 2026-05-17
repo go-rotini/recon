@@ -54,6 +54,29 @@ type Snapshot struct {
 	// aliases is the alias → canonical map, post-cycle-check, frozen for
 	// this snapshot. Read-only.
 	aliases map[string]string
+
+	// secretKeys is the set of canonical paths the registry had marked
+	// secret at the moment this snapshot was built. Frozen with the
+	// snapshot so [Snapshot.String] and downstream introspection can
+	// redact consistently with the snapshot's view.
+	secretKeys map[string]struct{}
+
+	// redactor is the snapshot-time secret redactor. Frozen so a
+	// concurrent [Registry.WithSecretRedactor] swap does not change how
+	// a previously-handed-out snapshot renders.
+	redactor func(string) string
+}
+
+// IsSecret reports whether p was marked secret at the time this
+// snapshot was built. Useful when handing a snapshot to a logger or
+// pretty-printer that needs to redact independently of the live
+// registry's current state.
+func (s *Snapshot) IsSecret(p Path) bool {
+	if s == nil {
+		return false
+	}
+	_, ok := s.secretKeys[p.String()]
+	return ok
 }
 
 // Get returns the resolved value at p. The bool reports whether any source —
@@ -109,10 +132,11 @@ func (s *Snapshot) AsMap() map[string]any {
 	return out
 }
 
-// String returns a compact, human-readable representation of the snapshot.
-// Secret values are redacted by their containing [Value]; this method does
-// not perform additional redaction (the snapshot does not know which fields
-// are secret-tagged — that is bind-target-side metadata).
+// String returns a compact, human-readable representation of the
+// snapshot. Keys marked secret (via [Registry.MarkSecret] or a
+// `secret`-tagged Bind field at the time the snapshot was built) are
+// rendered through the snapshot's redactor — the default writes "***"
+// — so a Snapshot.String() never leaks secret payloads into a log line.
 func (s *Snapshot) String() string {
 	if s == nil || len(s.keys) == 0 {
 		return "recon.Snapshot{}"
@@ -120,11 +144,16 @@ func (s *Snapshot) String() string {
 	var b strings.Builder
 	b.WriteString("recon.Snapshot{\n")
 	for _, p := range s.keys {
-		v := s.values[p.String()]
+		ks := p.String()
+		v := s.values[ks]
+		text := v.String()
+		if _, isSecret := s.secretKeys[ks]; isSecret && s.redactor != nil {
+			text = s.redactor(text)
+		}
 		b.WriteString("  ")
-		b.WriteString(p.String())
+		b.WriteString(ks)
 		b.WriteString(" = ")
-		b.WriteString(v.String())
+		b.WriteString(text)
 		if src := v.Source(); src != "" {
 			b.WriteString("  (from ")
 			b.WriteString(src)
@@ -163,12 +192,27 @@ func setNested(m map[string]any, p Path, v any) {
 // registry; keeping it separate from registryOptions lets buildSnapshot stay
 // pure (no registry mutex held during the build).
 type snapshotInputs struct {
-	sources    []Source
-	explicits  map[string]any
-	defaults   map[string]any
-	aliases    map[string]string // alias path string → canonical path string
-	pins       map[string]string // canonical path string → pinned source name
-	requireAll bool              // unused in Phase 3; reserved for the loader
+	sources   []Source
+	explicits map[string]any
+	defaults  map[string]any
+	aliases   map[string]string // alias path string → canonical path string
+	pins      map[string]string // canonical path string → pinned source name
+
+	// secretKeys is the registry-tracked secret set the snapshot
+	// should carry. Frozen with the snapshot so downstream redaction
+	// matches the snapshot's view.
+	secretKeys map[string]struct{}
+
+	// redactor is the snapshot-time redactor; defaults to "***".
+	redactor func(string) string
+
+	// merge controls how multi-source contributions to the same key
+	// are combined. [MergeShadow] (the default) keeps "first higher
+	// wins"; [MergeAppend] concatenates slices and deep-merges maps
+	// across the source chain.
+	merge MergeStrategy
+
+	requireAll bool // reserved for the loader's strict-all-keys behavior
 }
 
 // buildSnapshot resolves every key in is and produces a frozen *Snapshot.
@@ -191,11 +235,14 @@ func buildSnapshot(is snapshotInputs) *Snapshot {
 		sources:     map[string][]string{},
 		sourceNames: make([]string, len(is.sources)),
 		aliases:     map[string]string{},
+		secretKeys:  map[string]struct{}{},
+		redactor:    is.redactor,
 	}
 	for i, src := range is.sources {
 		s.sourceNames[i] = src.Name()
 	}
 	maps.Copy(s.aliases, is.aliases)
+	maps.Copy(s.secretKeys, is.secretKeys)
 
 	candidates := collectCandidateKeys(is)
 

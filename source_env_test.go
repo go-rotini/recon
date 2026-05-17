@@ -15,107 +15,154 @@ func TestOSEnvSource_NameAndClose(t *testing.T) {
 	}
 }
 
-func TestOSEnvSource_GetReadsEnvVar(t *testing.T) {
-	t.Setenv("RECON_TEST_KEY", "value-1")
+// TestOSEnvSource_PathProjectsToEnvVar verifies the canonical
+// 12-factor mapping: a recon path of `server.port` reads the
+// `SERVER_PORT` env var via [SnakeUpperTransform].
+func TestOSEnvSource_PathProjectsToEnvVar(t *testing.T) {
+	t.Setenv("SERVER_PORT", "8080")
 	s := NewOSEnvSource()
-	v, ok, err := s.Get(MakePath("RECON_TEST_KEY"))
+
+	v, ok, err := s.Get(MakePath("server", "port"))
 	if err != nil || !ok {
-		t.Fatalf("Get: ok=%v err=%v", ok, err)
+		t.Fatalf("Get(server.port) ok=%v err=%v", ok, err)
 	}
-	if got, _ := v.AsString(); got != "value-1" {
-		t.Fatalf("RECON_TEST_KEY=%q", got)
-	}
-}
-
-func TestOSEnvSource_GetMissing(t *testing.T) {
-	s := NewOSEnvSource()
-	if _, ok, _ := s.Get(MakePath("RECON_DEFINITELY_UNSET_XYZZY")); ok {
-		t.Fatal("unset var ok=true")
+	if got, _ := v.AsString(); got != "8080" {
+		t.Fatalf("server.port=%q", got)
 	}
 }
 
-func TestOSEnvSource_GetMultiSegmentPathReturnsMiss(t *testing.T) {
-	t.Setenv("RECON_TEST_KEY", "v")
-	s := NewOSEnvSource()
-	if _, ok, _ := s.Get(MakePath("RECON", "TEST", "KEY")); ok {
-		t.Fatal("multi-segment path resolved; env keys are flat")
+// TestOSEnvSource_PrefixedPathProjects verifies WithEnvPrefix
+// composes into the transform — Path{"port"} reads APP_PORT.
+func TestOSEnvSource_PrefixedPathProjects(t *testing.T) {
+	t.Setenv("APP_PORT", "8080")
+	t.Setenv("APP_SERVER_HOST", "localhost")
+	s := NewOSEnvSource(WithEnvPrefix("APP_"))
+
+	v, ok, _ := s.Get(MakePath("port"))
+	if !ok {
+		t.Fatal("port not resolved through APP_PORT")
+	}
+	if got, _ := v.AsString(); got != "8080" {
+		t.Fatalf("port=%q", got)
+	}
+
+	v, ok, _ = s.Get(MakePath("server", "host"))
+	if !ok {
+		t.Fatal("server.host not resolved through APP_SERVER_HOST")
+	}
+	if got, _ := v.AsString(); got != "localhost" {
+		t.Fatalf("server.host=%q", got)
 	}
 }
 
-func TestOSEnvSource_PrefixFilter(t *testing.T) {
-	t.Setenv("RECON_TEST_FILTER_A", "1")
-	t.Setenv("RECON_TEST_FILTER_B", "2")
-	t.Setenv("UNRELATED_VAR", "x")
+// TestOSEnvSource_PrefixedKeysOnly verifies unprefixed env vars
+// do NOT surface when a prefix is configured.
+func TestOSEnvSource_PrefixedKeysOnly(t *testing.T) {
+	t.Setenv("APP_PORT", "8080")
+	t.Setenv("UNRELATED_THING", "whatever")
+	s := NewOSEnvSource(WithEnvPrefix("APP_"))
 
-	s := NewOSEnvSource(WithEnvPrefix("RECON_TEST_FILTER_"))
-	if _, ok, _ := s.Get(MakePath("UNRELATED_VAR")); ok {
-		t.Fatal("UNRELATED_VAR visible through prefix filter")
-	}
-	if _, ok, _ := s.Get(MakePath("RECON_TEST_FILTER_A")); !ok {
-		t.Fatal("prefixed key not visible")
-	}
-
-	keys := s.Keys()
-	for _, k := range keys {
-		ks := k.String()
-		if ks == "UNRELATED_VAR" {
-			t.Fatal("UNRELATED_VAR in Keys() with prefix filter")
-		}
+	if _, ok, _ := s.Get(MakePath("unrelated", "thing")); ok {
+		t.Fatal("UNRELATED_THING visible despite prefix filter")
 	}
 }
 
-func TestOSEnvSource_KeysCachedUntilRefresh(t *testing.T) {
-	t.Setenv("RECON_KEYS_CACHE", "1")
-	s := NewOSEnvSource(WithEnvPrefix("RECON_KEYS_"))
-	keys1 := s.Keys()
+// TestOSEnvSource_KeysEnumeratesEnv verifies Keys() returns paths
+// projected from the matching env vars (snake-upper inverse).
+func TestOSEnvSource_KeysEnumeratesEnv(t *testing.T) {
+	t.Setenv("OSENV_TEST_A", "1")
+	t.Setenv("OSENV_TEST_B", "2")
+	s := NewOSEnvSource(WithEnvPrefix("OSENV_TEST_"))
 
-	t.Setenv("RECON_KEYS_NEW", "2")
-	// Cached — new var not yet visible.
-	keys2 := s.Keys()
-	if len(keys1) != len(keys2) {
-		t.Fatalf("Keys() changed without Refresh: %d → %d", len(keys1), len(keys2))
-	}
-
-	_ = s.Refresh()
-	keys3 := s.Keys()
-	if len(keys3) <= len(keys1) {
-		t.Fatalf("Refresh didn't pick up new var: %d → %d", len(keys1), len(keys3))
-	}
-}
-
-func TestOSEnvSource_KeysSortedAndFiltered(t *testing.T) {
-	t.Setenv("RECON_SORT_CCC", "3")
-	t.Setenv("RECON_SORT_AAA", "1")
-	t.Setenv("RECON_SORT_BBB", "2")
-	s := NewOSEnvSource(WithEnvPrefix("RECON_SORT_"))
 	keys := s.Keys()
 	got := make([]string, len(keys))
 	for i, k := range keys {
 		got[i] = k.String()
 	}
 	if !slices.IsSorted(got) {
-		t.Fatalf("Keys()=%v, want sorted", got)
+		t.Fatalf("Keys not sorted: %v", got)
 	}
-	for _, k := range got {
-		if len(k) < len("RECON_SORT_") || k[:len("RECON_SORT_")] != "RECON_SORT_" {
-			t.Fatalf("Keys contains unfiltered %q", k)
+	// Path{"a"} and Path{"b"} should both surface (lowercased).
+	want := map[string]bool{"a": false, "b": false}
+	for _, g := range got {
+		if _, exists := want[g]; exists {
+			want[g] = true
+		}
+	}
+	for k, ok := range want {
+		if !ok {
+			t.Errorf("missing %q in Keys()=%v", k, got)
 		}
 	}
 }
 
-func TestOSEnvSource_IntegrationWithRegistry(t *testing.T) {
-	t.Setenv("RECON_REG_INT_PORT", "8080")
-	s := NewOSEnvSource(WithEnvPrefix("RECON_REG_INT_"))
-	r := newRegistry(t, WithSource(s))
-	if v, _, _ := r.GetString("RECON_REG_INT_PORT"); v != "8080" {
-		t.Fatalf("PORT via registry=%q", v)
+// TestOSEnvSource_CustomTransformAndParser verifies a caller can
+// override the default snake-upper convention for a non-standard
+// env-var-naming scheme.
+func TestOSEnvSource_CustomTransformAndParser(t *testing.T) {
+	// Treat the env var as a verbatim, case-preserving lookup.
+	t.Setenv("server.port", "8080")
+	s := NewOSEnvSource(
+		WithEnvTransform(IdentityTransform),
+		WithEnvKeyParser(ParsePath),
+	)
+
+	v, ok, _ := s.Get(MakePath("server", "port"))
+	if !ok {
+		t.Fatal("identity-transform path not resolved")
 	}
-	// Env-var values are always strings on the wire; numeric coercion
-	// from a string Value lands with the Bind / Phase-6 struct decoder.
-	// Confirm here that the value's kind is StringKind so a Phase-6
-	// reader knows what to coerce from.
-	v, ok, _ := r.Get("RECON_REG_INT_PORT")
+	if got, _ := v.AsString(); got != "8080" {
+		t.Fatalf("server.port=%q", got)
+	}
+}
+
+func TestOSEnvSource_RefreshPicksUpNewEnv(t *testing.T) {
+	s := NewOSEnvSource(WithEnvPrefix("OSENV_REFRESH_"))
+	// Establish the cache empty.
+	if keys := s.Keys(); len(keys) > 0 {
+		// Other matching env vars may exist; we only assert our key
+		// is initially absent.
+		for _, k := range keys {
+			if k.String() == "new" {
+				t.Fatal("OSENV_REFRESH_NEW set before test")
+			}
+		}
+	}
+
+	t.Setenv("OSENV_REFRESH_NEW", "v")
+	// Cached, so still empty (or stale).
+	cached := s.Keys()
+	for _, k := range cached {
+		if k.String() == "new" {
+			t.Fatal("cache reflected env mutation without Refresh")
+		}
+	}
+
+	_ = s.Refresh()
+	keys := s.Keys()
+	saw := false
+	for _, k := range keys {
+		if k.String() == "new" {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatalf("Refresh did not pick up OSENV_REFRESH_NEW; keys=%v", keys)
+	}
+}
+
+func TestOSEnvSource_IntegrationWithRegistry(t *testing.T) {
+	t.Setenv("APP_SERVER_PORT", "8080")
+	s := NewOSEnvSource(WithEnvPrefix("APP_"))
+	r := newRegistry(t, WithSource(s))
+
+	if v, _, _ := r.GetString("server.port"); v != "8080" {
+		t.Fatalf("server.port via registry=%q", v)
+	}
+	// Env-var values are always StringKind; numeric coercion happens
+	// at the Bind / Get[int] call site.
+	v, ok, _ := r.Get("server.port")
 	if !ok || v.Kind() != StringKind {
-		t.Fatalf("PORT kind=%v ok=%v, want StringKind", v.Kind(), ok)
+		t.Fatalf("server.port kind=%v ok=%v, want StringKind", v.Kind(), ok)
 	}
 }

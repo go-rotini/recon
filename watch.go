@@ -65,16 +65,20 @@ func newWatchEngine(r *Registry) *watchEngine {
 	}
 }
 
-// start subscribes to every [Watcher]-implementing source and kicks off
-// the debounce loop. Subscription failures are logged but do not abort
-// startup — the registry stays usable for non-watch use even when a
-// single source's watcher cannot subscribe.
+// start subscribes to every [Watcher]-implementing source, kicks off
+// the optional poll ticker for non-Watcher sources (when
+// [WithPoll] is set), and starts the debounce loop. Subscription
+// failures are logged but do not abort startup — the registry stays
+// usable for non-watch use even when a single source's watcher
+// cannot subscribe.
 //
 // The caller MUST hold r.state.mu.
 func (e *watchEngine) start() {
+	hasNonWatcher := false
 	for _, src := range e.r.state.sources {
 		w, ok := src.(Watcher)
 		if !ok {
+			hasNonWatcher = true
 			continue
 		}
 		sub, err := w.Watch(e.ctx)
@@ -86,8 +90,60 @@ func (e *watchEngine) start() {
 		e.wg.Add(1)
 		go e.forward(src.Name(), sub)
 	}
+	if hasNonWatcher && e.r.state.opts.pollInterval > 0 {
+		e.wg.Add(1)
+		go e.poll(e.r.state.opts.pollInterval)
+	}
 	e.wg.Add(1)
 	go e.loop()
+}
+
+// poll fires a synthetic SourceChange on the engine's pending
+// channel every interval. Used when [WithPoll] is configured AND at
+// least one registered source does not implement [Watcher] —
+// typically [OSEnvSource], whose underlying os.LookupEnv has no
+// notification channel.
+//
+// Source refreshes happen at the source layer; the engine's role is
+// to drive the rebuild on a cadence. Sources with an internal cache
+// (like [OSEnvSource]) get a [OSEnvSource.Refresh] call here so
+// their cached keyset matches the new env state.
+func (e *watchEngine) poll(interval time.Duration) {
+	defer e.wg.Done()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case <-ticker.C:
+			e.refreshNonWatcherSources()
+			select {
+			case e.pending <- pendingChange{src: "poll", change: SourceChange{}}:
+			case <-e.ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+// refreshNonWatcherSources walks the registry's source chain and
+// calls Refresh on any source that exposes it. The Refresh method
+// is intentionally not part of the [Source] interface — sources
+// that benefit from it (env-style polling) expose it as an
+// optional capability the engine consults via type assertion.
+func (e *watchEngine) refreshNonWatcherSources() {
+	e.r.state.mu.Lock()
+	sources := append([]Source(nil), e.r.state.sources...)
+	e.r.state.mu.Unlock()
+	for _, src := range sources {
+		if _, isWatcher := src.(Watcher); isWatcher {
+			continue
+		}
+		if rsh, ok := src.(interface{ Refresh() int }); ok {
+			_ = rsh.Refresh()
+		}
+	}
 }
 
 // forward shuttles SourceChange events from one source's subscription
@@ -170,26 +226,38 @@ func (e *watchEngine) loop() {
 	}
 }
 
-// fireReload runs one full reload cycle: rebuild the snapshot, diff
-// against the previous one, validate, and emit. Snapshot installation
-// is unconditional (validators are advisory on reload — the previous-
-// snapshot-retained contract from §2.5.3 is honored only on hard
-// build failures, which Phase 8 sources can't surface).
+// fireReload runs one full reload cycle: rebuild the candidate
+// snapshot, run the immutable + validator checks, and emit. When the
+// checks pass, the candidate is atomic-installed and Event.Changed
+// reflects the diff against the previous snapshot. When the checks
+// fail, the previous snapshot is retained — readers continue to
+// observe the last-known-good resolved view — and the Event carries
+// Err with an empty Changed slice.
+//
+// This is the "previous-snapshot-retained on validator failure"
+// contract: a bad reload never makes the registry serve unvalidated
+// state.
 func (e *watchEngine) fireReload(src string) {
 	prev := e.r.state.snapshot.Load()
 
 	e.r.state.mu.Lock()
-	validateErr := e.r.rebuildSnapshotLocked()
+	rebuildErr := e.r.rebuildSnapshotLocked()
 	e.r.state.mu.Unlock()
 
 	cur := e.r.state.snapshot.Load()
-	changed := diffSnapshots(prev, cur)
+	var changed []Path
+	if rebuildErr == nil {
+		changed = diffSnapshots(prev, cur)
+	}
 
 	evt := Event{
 		Time:    time.Now(),
 		Source:  src,
 		Changed: changed,
-		Err:     validateErr,
+		Err:     rebuildErr,
+	}
+	if w := e.r.DrainWarnings(); len(w) > 0 {
+		evt.Warnings = append(evt.Warnings, w...)
 	}
 	e.emit(evt)
 }

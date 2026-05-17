@@ -2,6 +2,7 @@ package recon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -41,6 +42,13 @@ type registryState struct {
 	// `immutable`-tagged field. Consulted on every snapshot rebuild;
 	// a candidate whose value differs from the baseline is rejected.
 	immutableBaseline map[string]Value
+
+	// pendingWarnings queues non-fatal advisories the registry has
+	// produced since the last drain. Populated by the [Bind] walker
+	// when it encounters a `deprecated`-tagged field whose source
+	// supplied a value. Drained by the watch engine on its next
+	// Event emit, and by callers via [Registry.DrainWarnings].
+	pendingWarnings []DeprecationWarning
 
 	closeOnce sync.Once
 	closed    atomic.Bool
@@ -208,10 +216,16 @@ func (r *Registry) ReloadContext(ctx context.Context) error {
 	return r.rebuildSnapshotLocked()
 }
 
-// AddSource registers s at the lowest precedence (appended to the chain).
-// Returns ErrSourceConflict when a source with the same Name() is already
-// registered or when Name() is a reserved provenance label ("explicit",
-// "default"). The snapshot is rebuilt before AddSource returns.
+// AddSource registers s at the lowest precedence (appended to the
+// chain). Returns ErrSourceConflict when a source with the same
+// Name() is already registered or when Name() is a reserved
+// provenance label ("explicit", "default"). The snapshot is rebuilt
+// before AddSource returns.
+//
+// Transactional: if the rebuild fails the immutable-baseline or
+// validator check, the source is rolled out of the chain and the
+// error is returned. The Source.Close hook is NOT invoked on
+// rollback — the caller still owns the source.
 func (r *Registry) AddSource(s Source) error {
 	if r.state.closed.Load() {
 		return ErrRegistryClosed
@@ -221,13 +235,18 @@ func (r *Registry) AddSource(s Source) error {
 	if err := r.addSourceLocked(s); err != nil {
 		return err
 	}
-	r.rebuildAndReport()
+	if err := r.rebuildSnapshotLocked(); err != nil {
+		// Roll the source back out of the chain.
+		r.state.sources = r.state.sources[:len(r.state.sources)-1]
+		return err
+	}
 	return nil
 }
 
 // InsertSource registers s at the given precedence index (0 = highest).
-// An index outside [0, len(sources)] is clamped to the nearest valid slot.
-// Same conflict semantics as [Registry.AddSource].
+// An index outside [0, len(sources)] is clamped to the nearest valid
+// slot. Same conflict + transactional rebuild semantics as
+// [Registry.AddSource].
 func (r *Registry) InsertSource(at int, s Source) error {
 	if r.state.closed.Load() {
 		return ErrRegistryClosed
@@ -246,15 +265,30 @@ func (r *Registry) InsertSource(at int, s Source) error {
 	case at > len(r.state.sources):
 		at = len(r.state.sources)
 	}
+	if r.state.opts.watcher != nil {
+		if setter, ok := s.(watcherSetter); ok {
+			setter.SetWatcher(r.state.opts.watcher)
+		}
+	}
 	r.state.sources = slices.Insert(r.state.sources, at, s)
-	r.rebuildAndReport()
+	if err := r.rebuildSnapshotLocked(); err != nil {
+		r.state.sources = slices.Delete(r.state.sources, at, at+1)
+		return err
+	}
 	return nil
 }
 
-// RemoveSource removes the source with the given name. Returns nil even
-// when no source by that name is registered — Remove is idempotent (the
-// rotini per-command lifecycle adds and removes sources around each
-// dispatch; an idempotent Remove keeps that pattern simple).
+// RemoveSource removes the source with the given name. Returns nil
+// even when no source by that name is registered — Remove is
+// idempotent (the rotini per-command lifecycle adds and removes
+// sources around each dispatch; an idempotent Remove keeps that
+// pattern simple).
+//
+// Transactional: if the rebuild fails after removal, the source is
+// re-inserted at its original index AND its Close() — already called
+// before the rebuild — is NOT undone. Callers writing schema-bound
+// configs should treat RemoveSource failures as a "your schema
+// rejects this removal" signal and not retry the same Remove.
 func (r *Registry) RemoveSource(name string) error {
 	if r.state.closed.Load() {
 		return ErrRegistryClosed
@@ -262,12 +296,17 @@ func (r *Registry) RemoveSource(name string) error {
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
 	for i, s := range r.state.sources {
-		if s.Name() == name {
-			_ = s.Close()
-			r.state.sources = slices.Delete(r.state.sources, i, i+1)
-			r.rebuildAndReport()
-			return nil
+		if s.Name() != name {
+			continue
 		}
+		removed := r.state.sources[i]
+		r.state.sources = slices.Delete(r.state.sources, i, i+1)
+		if err := r.rebuildSnapshotLocked(); err != nil {
+			r.state.sources = slices.Insert(r.state.sources, i, removed)
+			return err
+		}
+		_ = s.Close()
+		return nil
 	}
 	return nil
 }
@@ -289,6 +328,53 @@ func (r *Registry) Sources() []string {
 // stable resolved configuration to a downstream component (a goroutine, a
 // SchemaValidator) without that component having to coordinate with reloads.
 func (r *Registry) Snapshot() *Snapshot { return r.state.snapshot.Load() }
+
+// Validator returns the [SchemaValidator] this registry was
+// constructed with, or nil when no validator was installed.
+// Downstream tooling (help renderers, doc generators) uses this to
+// introspect the active schema.
+func (r *Registry) Validator() SchemaValidator {
+	if r == nil {
+		return nil
+	}
+	return r.state.opts.validator
+}
+
+// Validate runs the configured [SchemaValidator] (if any) against
+// the current snapshot and returns its result. A registry with no
+// validator returns nil — there's no schema to fail against. A
+// closed registry returns [ErrRegistryClosed].
+//
+// Unlike the implicit validator pass that runs inside every
+// snapshot rebuild, this method is on-demand: useful for "check
+// current state" tooling that doesn't want to trigger a rebuild
+// (e.g., a `myapp config validate` subcommand).
+//
+// Secret-marked keys' validation messages are redacted in the
+// returned error so a `Validate()` call from a logging context
+// never leaks the offending value.
+func (r *Registry) Validate() error {
+	if err := r.validateNotClosed(); err != nil {
+		return err
+	}
+	validator := r.state.opts.validator
+	if validator == nil {
+		return nil
+	}
+	snap := r.state.snapshot.Load()
+	input := map[string]any{}
+	if snap != nil {
+		input = snap.AsMap()
+	}
+	if err := validator.Validate(input); err != nil {
+		r.state.mu.Lock()
+		secrets := cloneStringSet(r.state.secretKeys)
+		r.state.mu.Unlock()
+		redactValidationErrorsForSecrets(err, secrets)
+		return fmt.Errorf("recon: schema validation: %w", err)
+	}
+	return nil
+}
 
 // addSourceLocked is the locked-caller helper that backs AddSource and
 // New's initial-source loop. The caller MUST hold r.state.mu.
@@ -368,29 +454,64 @@ func (r *Registry) applyPrecedenceLocked(order []string) {
 	r.state.sources = out
 }
 
-// rebuildAndReport is the log-and-discard variant of
-// [Registry.rebuildSnapshotLocked]: a validator failure is logged via
-// the registry's logger but not propagated to the caller. Used by
-// write paths (Set, SetDefault, AddSource, …) so an intermediate
-// validation failure does not abort an in-progress sequence of writes.
-// The caller MUST hold r.state.mu.
-func (r *Registry) rebuildAndReport() {
-	if err := r.rebuildSnapshotLocked(); err != nil {
-		r.state.logger.Warn("recon: snapshot validation failed", "err", err)
+// redactValidationErrorsForSecrets walks err and marks every
+// [*ValidationError] whose Path is in secretKeys as Secret=true.
+// Applied AFTER the schema validator returns so the validator
+// itself doesn't need to know about recon's secret-key set — the
+// SchemaValidator interface stays clean.
+//
+// Walks both single errors and *MultiError trees via errors.As; any
+// non-ValidationError entries (Source errors, wrapped causes) are
+// left untouched.
+func redactValidationErrorsForSecrets(err error, secretKeys map[string]struct{}) {
+	if err == nil || len(secretKeys) == 0 {
+		return
+	}
+	var multi *MultiError
+	if errors.As(err, &multi) {
+		for _, sub := range multi.Errors {
+			redactValidationErrorsForSecrets(sub, secretKeys)
+		}
+		return
+	}
+	var ve *ValidationError
+	if errors.As(err, &ve) {
+		if _, ok := secretKeys[ve.Path.String()]; ok {
+			ve.Secret = true
+		}
 	}
 }
 
-// rebuildSnapshotLocked recomputes the snapshot from the registry's current
-// state, atomic-stores it, and runs the configured immutable +
-// [SchemaValidator] checks against the resulting view. The caller
-// MUST hold r.state.mu.
+// rebuildAndReport is the log-but-still-return-error variant of
+// [Registry.rebuildSnapshotLocked]. Used by [New] during initial
+// construction where the caller intentionally accepts the registry
+// even when the first snapshot's validator or immutable check fails.
+// The caller MUST hold r.state.mu.
+func (r *Registry) rebuildAndReport() {
+	if err := r.rebuildSnapshotLocked(); err != nil {
+		r.state.logger.Warn("recon: initial snapshot rejected", "err", err)
+	}
+}
+
+// rebuildSnapshotLocked builds a candidate snapshot, validates it
+// (immutable baselines + schema validator), and atomic-installs it
+// only on success. The caller MUST hold r.state.mu.
 //
-// The returned error aggregates immutable violations and validator
-// failures; the snapshot is installed regardless. Write paths (Set,
-// SetDefault, AddSource, …) ignore the error and log it via the
-// registry's logger so in-progress write sequences are not aborted by
-// an intermediate invalid state. Reload paths propagate the error so
-// callers can decide whether to roll forward.
+// The candidate-then-install model means a failing rebuild leaves the
+// previous snapshot in place — every concurrent [Get] / [Bind] /
+// [Live.Get] keeps observing the last-known-good resolved view. This
+// is the live-config correctness contract: a bad reload cannot
+// silently swap in unvalidated state.
+//
+// Errors are aggregated into a [*MultiError] when both immutable
+// violations and validator failures fire on the same rebuild; a
+// single-error rebuild returns the typed error directly so
+// [errors.Is] / [errors.As] work without unwrapping the MultiError.
+//
+// Write paths ([Set], [SetDefault], [Unset], [RegisterAlias], etc.)
+// must roll back their map mutation when this method returns an
+// error, otherwise the registry's explicit / default / alias state
+// drifts out of sync with the installed snapshot.
 func (r *Registry) rebuildSnapshotLocked() error {
 	is := snapshotInputs{
 		sources:    r.state.sources,
@@ -398,28 +519,33 @@ func (r *Registry) rebuildSnapshotLocked() error {
 		defaults:   cloneStringAnyMap(r.state.defaults),
 		aliases:    cloneStringStringMap(r.state.aliases),
 		pins:       cloneStringStringMap(r.state.pins),
+		secretKeys: cloneStringSet(r.state.secretKeys),
+		redactor:   r.state.opts.secretRedactor,
+		merge:      r.state.opts.merge,
 		requireAll: r.state.opts.requireAll,
 	}
-	snap := buildSnapshot(is)
-	r.state.snapshot.Store(snap)
+	candidate := buildSnapshot(is)
 
 	multi := &MultiError{}
-	for _, err := range r.checkImmutableLocked(snap) {
+	for _, err := range r.checkImmutableLocked(candidate) {
 		multi.Append(err)
 	}
 	if r.state.opts.validator != nil {
-		if err := r.state.opts.validator.Validate(snap.AsMap()); err != nil {
+		if err := r.state.opts.validator.Validate(candidate.AsMap()); err != nil {
+			redactValidationErrorsForSecrets(err, candidate.secretKeys)
 			multi.Append(fmt.Errorf("recon: schema validation: %w", err))
 		}
 	}
-	switch len(multi.Errors) {
-	case 0:
-		return nil
-	case 1:
-		return multi.Errors[0]
-	default:
+	if len(multi.Errors) > 0 {
+		// Candidate rejected — retain the previous snapshot.
+		if len(multi.Errors) == 1 {
+			return multi.Errors[0]
+		}
 		return multi
 	}
+
+	r.state.snapshot.Store(candidate)
+	return nil
 }
 
 // checkImmutableLocked compares the candidate snapshot's resolved
@@ -456,6 +582,34 @@ func (r *Registry) checkImmutableLocked(snap *Snapshot) []error {
 		})
 	}
 	return errs
+}
+
+// queueWarning appends w to the registry's pending-warning queue.
+// Used by the [Bind] walker (deprecated-tag emission) and any future
+// non-fatal advisory path. The queue is drained by
+// [Registry.DrainWarnings] / the watch engine.
+func (r *Registry) queueWarning(w DeprecationWarning) {
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	r.state.pendingWarnings = append(r.state.pendingWarnings, w)
+}
+
+// DrainWarnings returns and clears the registry's pending warning
+// queue. Callers wanting to consume deprecation notices outside the
+// watch-event flow (e.g., after a one-shot [Bind] with no live
+// reload) use this. The watch engine drains the same queue on every
+// Event emit so reload-driven consumers see them on Event.Warnings.
+//
+// Returns a nil slice when no warnings are queued.
+func (r *Registry) DrainWarnings() []DeprecationWarning {
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	if len(r.state.pendingWarnings) == 0 {
+		return nil
+	}
+	out := r.state.pendingWarnings
+	r.state.pendingWarnings = nil
+	return out
 }
 
 // markImmutable records baseline as the canonical value for the

@@ -287,12 +287,43 @@ func TestValue_AsSliceAsMap_TypeMismatch(t *testing.T) {
 	}
 }
 
-func TestRawValue_DecodePhase4Deferred(t *testing.T) {
-	// RawValue.Decode is a stub until Phase 4; verify it returns the
-	// documented sentinel so dependent code can plan around it.
+func TestRawValue_DecodeIntoMap(t *testing.T) {
+	rv := RawValue{Format: "json", Data: []byte(`{"k": "v"}`)}
+	var dst map[string]any
+	if err := rv.Decode(&dst); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if dst["k"] != "v" {
+		t.Fatalf("dst=%v", dst)
+	}
+}
+
+func TestRawValue_DecodeIntoStruct(t *testing.T) {
+	type Inner struct {
+		A int    `recon:"a"`
+		B string `recon:"b"`
+	}
+	rv := RawValue{Format: "json", Data: []byte(`{"a": 42, "b": "hi"}`)}
+	var dst Inner
+	if err := rv.Decode(&dst); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if dst.A != 42 || dst.B != "hi" {
+		t.Fatalf("dst=%+v", dst)
+	}
+}
+
+func TestRawValue_DecodeNilTargetErrors(t *testing.T) {
 	rv := RawValue{Format: "json", Data: []byte(`{}`)}
-	err := rv.Decode(nil)
-	if !errors.Is(err, ErrUnsupportedFormat) {
-		t.Errorf("Decode stub: want ErrUnsupportedFormat, got %v", err)
+	if err := rv.Decode(nil); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("err=%v, want wrap of ErrInvalidPath", err)
+	}
+}
+
+func TestRawValue_DecodeUnknownFormat(t *testing.T) {
+	rv := RawValue{Format: "xml", Data: []byte(`<x/>`)}
+	var dst map[string]any
+	if err := rv.Decode(&dst); !errors.Is(err, ErrUnsupportedFormat) {
+		t.Fatalf("err=%v, want wrap of ErrUnsupportedFormat", err)
 	}
 }

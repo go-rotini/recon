@@ -407,15 +407,90 @@ func parseStringMap(s, sep, kv string) map[string]Value {
 	return out
 }
 
-// coerceStruct handles the struct shapes coerce sees as leaves —
-// presently just time.Time. Every other struct type is rejected here
-// because the bind walker should have recursed before reaching coerce.
+// coerceStruct handles the struct shapes coerce sees as leaves:
+// time.Time (a stdlib special case routed to [coerceTime]) and
+// MapKind → struct (the `format=` tag's post-decode path, where a
+// JSON / YAML / TOML blob has been decoded into a map and the
+// destination is a user struct).
+//
+// MapKind → struct walks the destination's exported fields and
+// looks each one up in the source map via [coerceStructFromMap].
+// The struct's `recon`-tagged fields participate; untagged fields
+// fall back to a lowercased Go field name.
+//
+// Plain Go struct fields encountered during a [Registry.Bind] walk
+// do not reach this function — the walker recurses into them
+// before coerce sees them. This branch only fires for struct-typed
+// leaves that need a one-shot decode.
 func coerceStruct(v Value, dest reflect.Value, tag FieldTag) error {
 	if dest.Type() == reflect.TypeFor[time.Time]() {
 		return coerceTime(v, dest, tag)
 	}
+	if v.Kind() == MapKind {
+		return coerceStructFromMap(v, dest)
+	}
 	return fmt.Errorf("%w: nested struct %s should be walked, not coerced",
 		ErrTypeMismatch, dest.Type())
+}
+
+// coerceStructFromMap populates dest from a MapKind Value's
+// underlying map[string]Value, walking the destination's exported
+// fields one at a time. Used by [coerceStruct] when a `format=`
+// decode produces a map that needs to be projected into a struct.
+//
+// The walk follows the same name-resolution rules as the bind
+// walker: a `recon:"name"` tag wins, then the fallback tag chain
+// (env / json / yaml / toml), then a lowercased Go field name.
+// Nested structs / pointers / slices recurse through coerce.
+func coerceStructFromMap(v Value, dest reflect.Value) error {
+	m, err := v.AsMap()
+	if err != nil {
+		return err
+	}
+	t := dest.Type()
+	for i := range t.NumField() {
+		sf := t.Field(i)
+		if !sf.IsExported() {
+			continue
+		}
+		key := fieldKeyFromTag(sf)
+		if key == "" {
+			continue
+		}
+		sub, ok := m[key]
+		if !ok {
+			continue
+		}
+		if err := coerce(sub, dest.Field(i), FieldTag{}); err != nil {
+			return fmt.Errorf("field %s: %w", sf.Name, err)
+		}
+	}
+	return nil
+}
+
+// fieldKeyFromTag returns the canonical map-key recon would use to
+// look up sf's value during a [coerceStructFromMap] walk. Mirrors
+// the [bindWalker.segmentsFor] logic but limited to single-segment
+// projections — nested-path tags ("server.port") aren't valid as a
+// single map-key, so the parser collapses them to the first segment.
+func fieldKeyFromTag(sf reflect.StructField) string {
+	for _, name := range append([]string{TagName}, fallbackTagNames[:]...) {
+		raw, ok := sf.Tag.Lookup(name)
+		if !ok || raw == "" {
+			continue
+		}
+		ft := ParseTag(raw)
+		if ft.Skip {
+			return ""
+		}
+		if ft.Name != "" {
+			// Single-segment projection: use the first dot-separated
+			// segment so a tagged "server.port" matches against
+			// "server" in the decoded map (rare; documented).
+			return strings.SplitN(ft.Name, ".", 2)[0]
+		}
+	}
+	return strings.ToLower(sf.Name)
 }
 
 // coerceTime fills a time.Time destination. TimeKind passes through
