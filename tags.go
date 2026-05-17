@@ -15,8 +15,6 @@ const TagName = "recon"
 // Order matters: an `env:"NAME"` tag wins over a `json:"name"` tag because
 // recon's role as the env-loader successor is more authoritative than
 // stdlib-JSON shape.
-//
-//nolint:unused // consumed by the decoder in Phase 6 (registry_bind.go).
 var fallbackTagNames = [...]string{"env", "json", "yaml", "toml"}
 
 // FieldTag is the parsed form of a single struct-tag value. The decoder
