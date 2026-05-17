@@ -30,17 +30,26 @@ type EnvOption func(*envOptions)
 type RemoteOption func(*remoteOptions)
 
 // fileOptions / bufferOptions / stdinOptions / envOptions / remoteOptions
-// are forward-declared structs; their concrete fields are populated in
-// Phase 4 alongside each source's implementation. Declaring them as empty
-// here lets the public option types compile and lets downstream test code
-// import-and-call options without waiting for Phase 4.
+// are the internal settings structs each source's With* option closures
+// mutate. They grow field-by-field as each source's implementation lands.
+// Phase 3 wires the codec field on bufferOptions (BufferSource needs it at
+// construction); other fields land in Phase 4.
 type (
-	fileOptions   struct{}
-	bufferOptions struct{}
+	fileOptions struct{}
+
+	bufferOptions struct {
+		codec Codec
+	}
+
 	stdinOptions  struct{}
 	envOptions    struct{}
 	remoteOptions struct{}
 )
+
+// bufferCfgCodec is the read-side accessor used by [NewBufferSource] to
+// extract the codec a caller passed via [WithBufferCodec]. Kept package-
+// private so the field on bufferOptions stays unexported.
+func bufferCfgCodec(o bufferOptions) Codec { return o.codec }
 
 //
 // These are declared up-front so Phase 4's source_file.go implementation has
@@ -123,7 +132,7 @@ func setFilePathExpansion(_ *fileOptions, _ bool)     {}
 func setFileOptional(_ *fileOptions, _ bool)          {}
 func setFileFormat(_ *fileOptions, _ string)          {}
 
-func setBufferCodec(_ *bufferOptions, _ Codec) {}
+func setBufferCodec(o *bufferOptions, c Codec) { o.codec = c }
 func setStdinCodec(_ *stdinOptions, _ Codec)   {}
 
 func setEnvPrefix(_ *envOptions, _ string) {}

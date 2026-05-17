@@ -55,8 +55,6 @@ type registryOptions struct {
 // defaultRegistryOptions returns the registryOptions a fresh [Registry] uses
 // before user-supplied options are applied. Defaults are documented in §2.2,
 // §2.5, and §4.15 of the requirements doc.
-//
-//nolint:unused // consumed by Registry.New in Phase 3 (registry.go).
 func defaultRegistryOptions() registryOptions {
 	return registryOptions{
 		keyDelimiter:   DefaultDelimiter,
@@ -72,8 +70,6 @@ func defaultRegistryOptions() registryOptions {
 // defaultSecretRedactor is the registry-wide fallback for redacting secret
 // values in [Describe] / [Snapshot.String] / error messages. Replace via
 // [WithSecretRedactor].
-//
-//nolint:unused // installed as the default by defaultRegistryOptions; both surface in Phase 3.
 func defaultSecretRedactor(string) string { return "***" }
 
 // ErrorBehavior controls how the decoder accumulates per-field errors during
