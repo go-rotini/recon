@@ -3,9 +3,62 @@ package recon
 import (
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 )
+
+// fixture is the shared multi-format payload the per-codec roundtrip
+// tests decode. Type-shape is constrained to values every bundled codec
+// can represent: string, float64, bool, nested map, slice of strings.
+// Numeric int fidelity varies across codecs (JSON/YAML widen to float64,
+// TOML preserves int64) — assertFixtureMatches accepts either.
+var fixture = map[string]any{
+	"server": map[string]any{
+		"host":  "localhost",
+		"port":  float64(8080),
+		"debug": true,
+	},
+	"tags": []any{"alpha", "beta"},
+}
+
+// assertFixtureMatches inspects a decoded map against [fixture]. Loose
+// numeric equivalence (int64 ≈ float64) keeps the assertion useful
+// across codecs that differ in number representation. Structural
+// equivalence — same keys, same nesting, same scalar values — is what
+// the roundtrip check actually cares about.
+func assertFixtureMatches(t *testing.T, got map[string]any) {
+	t.Helper()
+	server, ok := got["server"].(map[string]any)
+	if !ok {
+		t.Fatalf("server is %T, want map[string]any", got["server"])
+	}
+	if server["host"] != "localhost" {
+		t.Fatalf("server.host=%v", server["host"])
+	}
+	switch p := server["port"].(type) {
+	case float64:
+		if p != 8080 {
+			t.Fatalf("server.port=%v", p)
+		}
+	case int64:
+		if p != 8080 {
+			t.Fatalf("server.port=%v", p)
+		}
+	default:
+		t.Fatalf("server.port is %T", server["port"])
+	}
+	if server["debug"] != true {
+		t.Fatalf("server.debug=%v", server["debug"])
+	}
+	tags, ok := got["tags"].([]any)
+	if !ok {
+		t.Fatalf("tags is %T", got["tags"])
+	}
+	if len(tags) != 2 || tags[0] != "alpha" || tags[1] != "beta" {
+		t.Fatalf("tags=%v", tags)
+	}
+}
 
 // fakeCodec is a Phase-2 test double — Phase 4 introduces real codecs.
 type fakeCodec struct {
@@ -141,6 +194,72 @@ func TestCodecs_Clone(t *testing.T) {
 	}
 	if _, ok := clone.ByName("yaml"); !ok {
 		t.Error("Clone lost an inherited codec")
+	}
+}
+
+// TestCodec_DecodeFailureContext checks every bundled codec produces an
+// error string that names the codec ("recon: yaml decode: …") so a
+// debugging grep can pinpoint which codec rejected a payload.
+func TestCodec_DecodeFailureContext(t *testing.T) {
+	cases := []struct {
+		name string
+		c    Codec
+		bad  []byte
+		want string
+	}{
+		{"json", JSON, []byte(`{not-json`), "recon: json"},
+		{"jsonc", JSONC, []byte(`{not-json`), "recon: jsonc"},
+		// YAML and TOML are tolerant of many inputs; use clearly broken
+		// payloads they actually reject.
+		{"yaml", YAML, []byte("\t\tnested:\n\tbad-indent"), "recon: yaml"},
+		{"toml", TOML, []byte("=missing key"), "recon: toml"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.c.Decode(tc.bad)
+			if err == nil {
+				t.Fatalf("expected decode error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err=%q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestDefaultCodecs_RegistersAllBundled(t *testing.T) {
+	c := DefaultCodecs()
+	for _, name := range []string{
+		FormatYAML, FormatTOML, FormatJSON, FormatJSONC, FormatDotenv,
+	} {
+		if _, ok := c.ByName(name); !ok {
+			t.Errorf("DefaultCodecs missing %q", name)
+		}
+	}
+}
+
+func TestDefaultCodecs_ByExtension(t *testing.T) {
+	cases := []struct {
+		ext  string
+		want string
+	}{
+		{".yaml", FormatYAML},
+		{".YML", FormatYAML},
+		{".toml", FormatTOML},
+		{".json", FormatJSON},
+		{".JSONC", FormatJSONC},
+		{".env", FormatDotenv},
+	}
+	c := DefaultCodecs()
+	for _, tc := range cases {
+		codec, ok := c.ByExtension(tc.ext)
+		if !ok {
+			t.Errorf("ByExtension(%q) not found", tc.ext)
+			continue
+		}
+		if codec.Name() != tc.want {
+			t.Errorf("ByExtension(%q).Name=%q, want %q", tc.ext, codec.Name(), tc.want)
+		}
 	}
 }
 
