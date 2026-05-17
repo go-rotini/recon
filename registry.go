@@ -28,6 +28,13 @@ type registryState struct {
 
 	snapshot atomic.Pointer[Snapshot]
 
+	// secretKeys is the set of canonical path strings the registry
+	// has been told contain secret data — populated by
+	// [Registry.MarkSecret] and by the [Registry.Bind] walker when
+	// it encounters a `secret`-tagged field. Consulted by
+	// [Registry.Describe] / [Registry.Save] for redaction.
+	secretKeys map[string]struct{}
+
 	closeOnce sync.Once
 	closed    atomic.Bool
 	logger    *slog.Logger
