@@ -22,6 +22,9 @@ type StdinOption func(*stdinOptions)
 // EnvOption configures an [OSEnvSource] constructor.
 type EnvOption func(*envOptions)
 
+// FlagOption configures a [FlagSource] constructor.
+type FlagOption func(*flagOptions)
+
 // RemoteOption configures a [RemoteSource] constructor.
 type RemoteOption func(*remoteOptions)
 
@@ -52,6 +55,11 @@ type (
 
 	envOptions struct {
 		prefix string
+	}
+
+	flagOptions struct {
+		name      string
+		transform func(flagName string) Path
 	}
 
 	remoteOptions struct{}
@@ -126,4 +134,31 @@ func WithStdinCodec(c Codec) StdinOption {
 // starts with prefix (e.g., "APP_" → only `APP_*` vars are visible).
 func WithEnvPrefix(prefix string) EnvOption {
 	return func(o *envOptions) { o.prefix = prefix }
+}
+
+// WithFlagName overrides the default source name ("flags") a
+// [FlagSource] reports. Useful when a registry composes more than
+// one flag adapter — global flags + subcommand flags, say.
+func WithFlagName(name string) FlagOption {
+	return func(o *flagOptions) {
+		if name != "" {
+			o.name = name
+		}
+	}
+}
+
+// WithFlagPathTransform replaces the default flag-name → [Path]
+// transform with a caller-supplied function. Useful when the flag
+// parser uses a naming convention recon should rewrite — e.g.,
+// `--server-port` should resolve to the path `server.port` instead
+// of the single-segment `server-port`.
+//
+// A nil transform is silently ignored; the previous transform is
+// retained.
+func WithFlagPathTransform(fn func(flagName string) Path) FlagOption {
+	return func(o *flagOptions) {
+		if fn != nil {
+			o.transform = fn
+		}
+	}
 }
