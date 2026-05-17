@@ -166,9 +166,11 @@ func (w *bindWalker) walkNested(fv reflect.Value, prefix Path, sf reflect.Struct
 
 // bindLeaf resolves the field's key, runs the value through coerce,
 // and applies per-field options (default, required, notEmpty,
-// custom decoder). The `secret` tag is propagated to the registry's
-// secret-key set as a side effect — every subsequent [Describe] or
-// [Save] honors the redaction for fields the bind target marked.
+// custom decoder). Two side effects on the registry:
+//
+//   - `secret` propagates to MarkSecret so Describe / Save redact.
+//   - `immutable` baselines the resolved value so subsequent reload
+//     candidates that change it are rejected by the snapshot rebuild.
 func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, sf reflect.StructField, tag FieldTag) {
 	path := w.pathFor(prefix, sf, tag)
 	if tag.Secret {
@@ -178,6 +180,9 @@ func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, sf reflect.StructFi
 	if lookupErr != nil {
 		w.appendErr(&SourceError{Source: value.Source(), Op: "get", Cause: lookupErr})
 		return
+	}
+	if tag.Immutable && found {
+		w.registry.markImmutable(path, value)
 	}
 
 	// Custom decoder dispatch wins outright when one matches the field

@@ -50,6 +50,12 @@ type registryOptions struct {
 
 	// Merge strategy
 	merge MergeStrategy
+
+	// optionErr captures a failure produced by an Option that needs
+	// to surface an error (e.g., [WithSchema] when schema compilation
+	// fails). New propagates it as its return value so option-side
+	// failures don't get silently swallowed.
+	optionErr error
 }
 
 // defaultRegistryOptions returns the registryOptions a fresh [Registry] uses
@@ -208,6 +214,28 @@ func WithPoll(interval time.Duration) Option {
 // in any other validator behind the same interface.
 func WithValidator(v SchemaValidator) Option {
 	return func(o *registryOptions) { o.validator = v }
+}
+
+// WithSchema is sugar over [WithValidator] for the common "I have raw
+// JSON Schema bytes" case. It compiles schemaJSON via
+// [NewJSONSchemaValidator] and installs the result as the registry's
+// validator. A compile failure is captured and surfaced by [New] as
+// its error return — the option machinery has no error channel of
+// its own, so the failure rides on the registry's options struct
+// until New sees it.
+//
+// For YAML / TOML / JSONC-encoded schemas, build the validator
+// explicitly via [NewJSONSchemaValidatorYAML] / TOML / JSONC and pass
+// it through [WithValidator].
+func WithSchema(schemaJSON []byte) Option {
+	return func(o *registryOptions) {
+		v, err := NewJSONSchemaValidator(schemaJSON)
+		if err != nil {
+			o.optionErr = err
+			return
+		}
+		o.validator = v
+	}
 }
 
 // WithRequireAll declares that every key the registry sees must come from

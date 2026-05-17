@@ -35,6 +35,13 @@ type registryState struct {
 	// [Registry.Describe] / [Registry.Save] for redaction.
 	secretKeys map[string]struct{}
 
+	// immutableBaseline maps a canonical path string to the resolved
+	// value first observed there at the time it was marked
+	// immutable. Populated by the [Registry.Bind] walker on every
+	// `immutable`-tagged field. Consulted on every snapshot rebuild;
+	// a candidate whose value differs from the baseline is rejected.
+	immutableBaseline map[string]Value
+
 	closeOnce sync.Once
 	closed    atomic.Bool
 	logger    *slog.Logger
@@ -73,6 +80,9 @@ func New(opts ...Option) (*Registry, error) {
 	options := defaultRegistryOptions()
 	for _, opt := range opts {
 		opt(&options)
+	}
+	if options.optionErr != nil {
+		return nil, options.optionErr
 	}
 	installDefaultCodecs(&options)
 	installDefaultWatcher(&options)
@@ -371,15 +381,16 @@ func (r *Registry) rebuildAndReport() {
 }
 
 // rebuildSnapshotLocked recomputes the snapshot from the registry's current
-// state, atomic-stores it, and runs the configured [SchemaValidator] (if
-// any) against the resulting view. The caller MUST hold r.state.mu.
+// state, atomic-stores it, and runs the configured immutable +
+// [SchemaValidator] checks against the resulting view. The caller
+// MUST hold r.state.mu.
 //
-// The returned error is the validator's; the snapshot is always
-// installed even on validator failure. Write paths (Set, SetDefault,
-// AddSource, …) ignore the error and log it via the registry's logger so
-// in-progress sequences of writes are not aborted by an intermediate
-// invalid state. Reload paths propagate the error so callers can decide
-// whether to roll forward.
+// The returned error aggregates immutable violations and validator
+// failures; the snapshot is installed regardless. Write paths (Set,
+// SetDefault, AddSource, …) ignore the error and log it via the
+// registry's logger so in-progress write sequences are not aborted by
+// an intermediate invalid state. Reload paths propagate the error so
+// callers can decide whether to roll forward.
 func (r *Registry) rebuildSnapshotLocked() error {
 	is := snapshotInputs{
 		sources:    r.state.sources,
@@ -391,13 +402,96 @@ func (r *Registry) rebuildSnapshotLocked() error {
 	}
 	snap := buildSnapshot(is)
 	r.state.snapshot.Store(snap)
-	if r.state.opts.validator == nil {
+
+	multi := &MultiError{}
+	for _, err := range r.checkImmutableLocked(snap) {
+		multi.Append(err)
+	}
+	if r.state.opts.validator != nil {
+		if err := r.state.opts.validator.Validate(snap.AsMap()); err != nil {
+			multi.Append(fmt.Errorf("recon: schema validation: %w", err))
+		}
+	}
+	switch len(multi.Errors) {
+	case 0:
+		return nil
+	case 1:
+		return multi.Errors[0]
+	default:
+		return multi
+	}
+}
+
+// checkImmutableLocked compares the candidate snapshot's resolved
+// values against the registry's immutable baselines. Returns one
+// [*ImmutableChangedError] per path whose value differs.
+//
+// Caller MUST hold r.state.mu.
+func (r *Registry) checkImmutableLocked(snap *Snapshot) []error {
+	if len(r.state.immutableBaseline) == 0 {
 		return nil
 	}
-	if err := r.state.opts.validator.Validate(snap.AsMap()); err != nil {
-		return fmt.Errorf("recon: schema validation: %w", err)
+	var errs []error
+	for path, baseline := range r.state.immutableBaseline {
+		cur, ok := snap.values[path]
+		if !ok {
+			continue
+		}
+		if valuesEqual(baseline, cur) {
+			continue
+		}
+		old := baseline.String()
+		next := cur.String()
+		if _, secret := r.state.secretKeys[path]; secret {
+			redactor := r.state.opts.secretRedactor
+			if redactor != nil {
+				old = redactor(old)
+				next = redactor(next)
+			}
+		}
+		errs = append(errs, &ImmutableChangedError{
+			Path: ParsePath(path),
+			Old:  old,
+			New:  next,
+		})
 	}
-	return nil
+	return errs
+}
+
+// markImmutable records baseline as the canonical value for the
+// immutable key at path. A baseline is set exactly once per key —
+// subsequent calls with the same path are no-ops so re-binding the
+// same struct doesn't reset the baseline.
+//
+// Called by the [Bind] walker on every field tagged `immutable`.
+func (r *Registry) markImmutable(path Path, baseline Value) {
+	if len(path) == 0 {
+		return
+	}
+	pathStr := path.String()
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	if r.state.immutableBaseline == nil {
+		r.state.immutableBaseline = map[string]Value{}
+	}
+	if _, exists := r.state.immutableBaseline[pathStr]; exists {
+		return
+	}
+	r.state.immutableBaseline[pathStr] = baseline
+}
+
+// IsImmutable reports whether path has been baselined as immutable —
+// either via a `immutable`-tagged field encountered by [Registry.Bind]
+// or via a future explicit MarkImmutable API.
+func (r *Registry) IsImmutable(key string) bool {
+	if r.state.closed.Load() {
+		return false
+	}
+	fullKey := r.fullKey(key)
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	_, ok := r.state.immutableBaseline[fullKey]
+	return ok
 }
 
 // cloneStringAnyMap returns a shallow copy of m. The values are reference-
