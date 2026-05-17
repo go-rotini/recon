@@ -27,7 +27,7 @@ func (r *Registry) Set(key string, value any) error {
 	} else {
 		r.state.explicits[fk] = value
 	}
-	r.rebuildSnapshotLocked()
+	r.rebuildAndReport()
 	return nil
 }
 
@@ -50,7 +50,7 @@ func (r *Registry) SetDefault(key string, value any) error {
 	} else {
 		r.state.defaults[fk] = value
 	}
-	r.rebuildSnapshotLocked()
+	r.rebuildAndReport()
 	return nil
 }
 
@@ -68,7 +68,7 @@ func (r *Registry) Unset(key string) error {
 		return nil
 	}
 	delete(r.state.explicits, fk)
-	r.rebuildSnapshotLocked()
+	r.rebuildAndReport()
 	return nil
 }
 
@@ -93,7 +93,7 @@ func (r *Registry) RegisterAlias(alias, canonical string) error {
 		return &AliasCycleError{Chain: chain}
 	}
 	r.state.aliases[fa] = fc
-	r.rebuildSnapshotLocked()
+	r.rebuildAndReport()
 	return nil
 }
 
@@ -119,7 +119,7 @@ func (r *Registry) PinSource(key, sourceName string) error {
 		}
 	}
 	r.state.pins[fk] = sourceName
-	r.rebuildSnapshotLocked()
+	r.rebuildAndReport()
 	return nil
 }
 
@@ -136,7 +136,7 @@ func (r *Registry) Unpin(key string) error {
 		return nil
 	}
 	delete(r.state.pins, fk)
-	r.rebuildSnapshotLocked()
+	r.rebuildAndReport()
 	return nil
 }
 

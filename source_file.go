@@ -158,15 +158,85 @@ func (s *FileSource) Reload() error {
 }
 
 // Watch returns a [SourceChange] channel for the underlying file. The
-// channel is closed when ctx is canceled or when [Close] is invoked.
+// per-source watcher factory ([WithFileWatcher]) takes precedence; when
+// none is set, the caller is expected to supply one — typically the
+// registry-wide [WithWatcher] factory threaded through the watch engine.
+// A nil factory makes Watch a no-op (returns a closed channel) so the
+// optional-watch contract on [Source] stays satisfiable.
 //
-// In Phase 4 the channel is returned closed — the actual watcher
-// integration lands in Phase 5 alongside [FSWatcher]. The method shape is
-// stable so callers can write watch-aware code today.
-func (s *FileSource) Watch(_ context.Context) (<-chan SourceChange, error) {
-	ch := make(chan SourceChange)
-	close(ch)
-	return ch, nil
+// On every notification from the underlying factory, Watch first re-reads
+// and decodes the file via [FileSource.Reload], then forwards a
+// [SourceChange] downstream so the registry's reload engine recomputes
+// the snapshot.
+func (s *FileSource) Watch(ctx context.Context) (<-chan SourceChange, error) {
+	factory := s.watcher
+	if factory == nil {
+		ch := make(chan SourceChange)
+		close(ch)
+		return ch, nil
+	}
+	upstream, err := factory.Watch(ctx, s.resolvedPath)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan SourceChange, 1)
+	go s.fanWatchEvents(ctx, upstream, out)
+	return out, nil
+}
+
+// SetWatcher attaches a [WatcherFactory] to a [FileSource] after
+// construction. Used by the registry to thread its registry-wide
+// factory into sources that did not get a per-source factory via
+// [WithFileWatcher].
+//
+// Calling SetWatcher after [FileSource.Watch] has been invoked has no
+// effect on the running subscription; restart the subscription to pick
+// up the new factory.
+func (s *FileSource) SetWatcher(w WatcherFactory) {
+	s.reload.Lock()
+	defer s.reload.Unlock()
+	s.watcher = w
+}
+
+// fanWatchEvents bridges the upstream factory's channel into the
+// FileSource's downstream channel. On every upstream notification it
+// runs [FileSource.Reload] and forwards a SourceChange describing the
+// outcome — empty Keys (whole-source refresh) on success, non-nil Err
+// when the reload itself fails.
+func (s *FileSource) fanWatchEvents(
+	ctx context.Context,
+	upstream <-chan SourceChange,
+	out chan<- SourceChange,
+) {
+	defer close(out)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case change, ok := <-upstream:
+			if !ok {
+				return
+			}
+			if change.Err != nil {
+				forwardChange(ctx, out, change)
+				continue
+			}
+			next := SourceChange{}
+			if err := s.Reload(); err != nil {
+				next.Err = err
+			}
+			forwardChange(ctx, out, next)
+		}
+	}
+}
+
+// forwardChange writes change to out, honoring ctx-cancellation so a
+// stalled downstream consumer does not pin the goroutine.
+func forwardChange(ctx context.Context, out chan<- SourceChange, change SourceChange) {
+	select {
+	case out <- change:
+	case <-ctx.Done():
+	}
 }
 
 // defaultFileOptions returns the fileOptions struct fresh callers see.

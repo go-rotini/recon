@@ -38,3 +38,14 @@ func installDefaultCodecs(opts *registryOptions) {
 		opts.codecs = DefaultCodecs()
 	}
 }
+
+// installDefaultWatcher installs [FSWatcher] as the registry's
+// [WatcherFactory] when the caller did not supply one via [WithWatcher].
+// File-backed sources consult this factory when they need a watch
+// subscription; the default keeps the "every file source live-reloads"
+// behavior on by default.
+func installDefaultWatcher(opts *registryOptions) {
+	if opts.watcher == nil {
+		opts.watcher = NewFSWatcher()
+	}
+}

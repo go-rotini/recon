@@ -86,6 +86,7 @@ require (
 	github.com/go-rotini/dotenv v1.0.0 // indirect
 	github.com/go-rotini/fs v1.0.0 // indirect
 	github.com/go-rotini/jsonc v1.1.0 // indirect
+	github.com/go-rotini/jsonschema v1.0.0 // indirect
 	github.com/go-rotini/toml v1.1.0 // indirect
 	github.com/go-rotini/yaml v1.2.0 // indirect
 	github.com/go-toolsmith/astcast v1.1.0 // indirect

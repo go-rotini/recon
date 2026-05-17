@@ -67,6 +67,7 @@ func New(opts ...Option) (*Registry, error) {
 		opt(&options)
 	}
 	installDefaultCodecs(&options)
+	installDefaultWatcher(&options)
 	r := &Registry{
 		state: &registryState{
 			opts:      options,
@@ -98,7 +99,7 @@ func New(opts ...Option) (*Registry, error) {
 		r.applyPrecedenceLocked(options.precedence)
 	}
 
-	r.rebuildSnapshotLocked()
+	r.rebuildAndReport()
 	r.state.mu.Unlock()
 
 	return r, addErr
@@ -149,8 +150,7 @@ func (r *Registry) ReloadContext(ctx context.Context) error {
 	}
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
-	r.rebuildSnapshotLocked()
-	return nil
+	return r.rebuildSnapshotLocked()
 }
 
 // AddSource registers s at the lowest precedence (appended to the chain).
@@ -166,7 +166,7 @@ func (r *Registry) AddSource(s Source) error {
 	if err := r.addSourceLocked(s); err != nil {
 		return err
 	}
-	r.rebuildSnapshotLocked()
+	r.rebuildAndReport()
 	return nil
 }
 
@@ -192,7 +192,7 @@ func (r *Registry) InsertSource(at int, s Source) error {
 		at = len(r.state.sources)
 	}
 	r.state.sources = slices.Insert(r.state.sources, at, s)
-	r.rebuildSnapshotLocked()
+	r.rebuildAndReport()
 	return nil
 }
 
@@ -210,7 +210,7 @@ func (r *Registry) RemoveSource(name string) error {
 		if s.Name() == name {
 			_ = s.Close()
 			r.state.sources = slices.Delete(r.state.sources, i, i+1)
-			r.rebuildSnapshotLocked()
+			r.rebuildAndReport()
 			return nil
 		}
 	}
@@ -237,6 +237,12 @@ func (r *Registry) Snapshot() *Snapshot { return r.state.snapshot.Load() }
 
 // addSourceLocked is the locked-caller helper that backs AddSource and
 // New's initial-source loop. The caller MUST hold r.state.mu.
+//
+// Watcher injection: if the source has no per-source [WatcherFactory] of
+// its own and the registry has one set via [WithWatcher], it is attached
+// here so [Source.Watch] subscribers go through the registry's chosen
+// backend. The injection is best-effort — sources that don't expose a
+// SetWatcher hook simply keep whatever factory they already had.
 func (r *Registry) addSourceLocked(s Source) error {
 	if s == nil {
 		return fmt.Errorf("%w: nil Source", ErrInvalidPath)
@@ -244,8 +250,21 @@ func (r *Registry) addSourceLocked(s Source) error {
 	if err := r.checkSourceNameLocked(s.Name()); err != nil {
 		return err
 	}
+	if r.state.opts.watcher != nil {
+		if setter, ok := s.(watcherSetter); ok {
+			setter.SetWatcher(r.state.opts.watcher)
+		}
+	}
 	r.state.sources = append(r.state.sources, s)
 	return nil
+}
+
+// watcherSetter is the optional capability sources implement to accept
+// a registry-injected [WatcherFactory]. Currently satisfied by
+// [FileSource]; future sources opt in by adding the same one-method
+// shape.
+type watcherSetter interface {
+	SetWatcher(w WatcherFactory)
 }
 
 // checkSourceNameLocked enforces the uniqueness + reserved-name rules a
@@ -294,15 +313,29 @@ func (r *Registry) applyPrecedenceLocked(order []string) {
 	r.state.sources = out
 }
 
+// rebuildAndReport is the log-and-discard variant of
+// [Registry.rebuildSnapshotLocked]: a validator failure is logged via
+// the registry's logger but not propagated to the caller. Used by
+// write paths (Set, SetDefault, AddSource, …) so an intermediate
+// validation failure does not abort an in-progress sequence of writes.
+// The caller MUST hold r.state.mu.
+func (r *Registry) rebuildAndReport() {
+	if err := r.rebuildSnapshotLocked(); err != nil {
+		r.state.logger.Warn("recon: snapshot validation failed", "err", err)
+	}
+}
+
 // rebuildSnapshotLocked recomputes the snapshot from the registry's current
-// state and atomic-stores it. The caller MUST hold r.state.mu.
+// state, atomic-stores it, and runs the configured [SchemaValidator] (if
+// any) against the resulting view. The caller MUST hold r.state.mu.
 //
-// In Phase 3 the rebuild is infallible — codec / remote-source failures
-// that will need to surface in later phases are intentionally absent here,
-// so this returns no error. When sources start failing (Phase 4+), the
-// previous snapshot will be retained (atomic-store skipped) to honor the
-// "failed reload, previous value held" contract from §2.5.3.
-func (r *Registry) rebuildSnapshotLocked() {
+// The returned error is the validator's; the snapshot is always
+// installed even on validator failure. Write paths (Set, SetDefault,
+// AddSource, …) ignore the error and log it via the registry's logger so
+// in-progress sequences of writes are not aborted by an intermediate
+// invalid state. Reload paths propagate the error so callers can decide
+// whether to roll forward.
+func (r *Registry) rebuildSnapshotLocked() error {
 	is := snapshotInputs{
 		sources:    r.state.sources,
 		explicits:  cloneStringAnyMap(r.state.explicits),
@@ -311,7 +344,15 @@ func (r *Registry) rebuildSnapshotLocked() {
 		pins:       cloneStringStringMap(r.state.pins),
 		requireAll: r.state.opts.requireAll,
 	}
-	r.state.snapshot.Store(buildSnapshot(is))
+	snap := buildSnapshot(is)
+	r.state.snapshot.Store(snap)
+	if r.state.opts.validator == nil {
+		return nil
+	}
+	if err := r.state.opts.validator.Validate(snap.AsMap()); err != nil {
+		return fmt.Errorf("recon: schema validation: %w", err)
+	}
+	return nil
 }
 
 // cloneStringAnyMap returns a shallow copy of m. The values are reference-
