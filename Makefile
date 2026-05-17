@@ -26,8 +26,8 @@ test-acceptance:
 test-bench:
 	@go test -bench=. -benchmem -count=1 ./... | tee test_bench.out
 
-# Fuzz targets land in Phase 11 (see RECON_PACKAGE_REQUIREMENTS.md §11 and §8.6).
-# Until then this target is a no-op so `make all` doesn't fail on an empty package.
+# Fuzz targets: FuzzParsePath, FuzzCoerce, FuzzMergeMaps, FuzzBind.
+# 60s per target in CI; bump fuzztime when running locally to dig deeper.
 test-fuzz:
 	@for target in FuzzParsePath FuzzCoerce FuzzMergeMaps FuzzBind; do \
 		if go test -list "^$$target$$" ./... 2>/dev/null | grep -q "^$$target$$"; then \
