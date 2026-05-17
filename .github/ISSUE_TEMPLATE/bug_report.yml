@@ -1,0 +1,79 @@
+name: Bug Report
+description: Report a bug in go-rotini/recon
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: registry-config
+    attributes:
+      label: Registry Configuration
+      description: |
+        The sources and options registered with the *Registry. Include the
+        precedence order, any aliases, any Set / SetDefault calls, and any
+        custom Codec / SchemaValidator / WatcherFactory passed via With*.
+        Redact secret values — replace with `<redacted>` and note the type.
+      render: go
+
+  - type: textarea
+    id: source-inputs
+    attributes:
+      label: Source Inputs
+      description: |
+        Sample env-var values, config file contents, flag arguments, etc.
+        that trigger the bug. Mark with the source name (e.g., "env:",
+        "config.yaml:").
+      render: text
+
+  - type: textarea
+    id: target-struct
+    attributes:
+      label: Target Struct (if Bind/Unmarshal was used)
+      description: The Go struct you're binding into, including `recon:"..."` tags.
+      render: go
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: Include any error text (output of recon.FormatError if applicable).
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: go-rotini/recon version (e.g., v0.1.0)
+    validations:
+      required: true
+
+  - type: input
+    id: go-version
+    attributes:
+      label: Go Version
+      description: Output of `go version`
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS / Platform
+      description: Linux / macOS / Windows; matters for OSEnv casing and file-watcher backends
+    validations:
+      required: true

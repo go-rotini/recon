@@ -1,0 +1,34 @@
+name: Feature Request
+description: Suggest a new feature or improvement for go-rotini/recon
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case
+      description: What are you trying to do? What's the problem?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API / Behavior
+      description: |
+        A sketch of what you'd like to write. Go signatures, struct-tag
+        examples, expected behavior — whatever makes the proposal concrete.
+      render: go
+
+  - type: textarea
+    id: prior-art
+    attributes:
+      label: Prior Art
+      description: |
+        Does Viper / koanf / a config library you've used handle this? How?
+        Comparisons are welcome — they help calibrate the design.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What workarounds did you try? Why don't they suffice?
