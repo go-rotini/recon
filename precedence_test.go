@@ -31,7 +31,7 @@ func TestPrecedence_Conformance(t *testing.T) {
 		case "buf":
 			// Hand-roll the JSON so we don't pull in the bundled codec.
 			b := mustEncodeJSON(t, data)
-			s, err := NewBufferSource(name, "json", b, WithBufferCodec(jsonTestCodec{}))
+			s, err := NewBufferSource(name, "json", b, WithBufferCodec(JSON))
 			if err != nil {
 				t.Fatalf("NewBufferSource: %v", err)
 			}
@@ -250,7 +250,7 @@ func TestPrecedence_AliasChain(t *testing.T) {
 // BufferSource payloads in the precedence matrix.
 func mustEncodeJSON(t *testing.T, m map[string]any) []byte {
 	t.Helper()
-	b, err := jsonTestCodec{}.Encode(m)
+	b, err := JSON.Encode(m)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}

@@ -66,6 +66,7 @@ func New(opts ...Option) (*Registry, error) {
 	for _, opt := range opts {
 		opt(&options)
 	}
+	installDefaultCodecs(&options)
 	r := &Registry{
 		state: &registryState{
 			opts:      options,

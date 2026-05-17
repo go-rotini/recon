@@ -1,6 +1,6 @@
 module github.com/go-rotini/recon
 
-go 1.26
+go 1.26.2
 
 toolchain go1.26.3
 
@@ -77,12 +77,17 @@ require (
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/fatih/structtag v1.2.0 // indirect
 	github.com/firefart/nonamedreturns v1.0.6 // indirect
-	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fzipp/gocyclo v0.6.0 // indirect
 	github.com/ghostiam/protogetter v0.3.20 // indirect
 	github.com/go-critic/go-critic v0.14.3 // indirect
 	github.com/go-gremlins/gremlins v0.6.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
+	github.com/go-rotini/dotenv v1.0.0 // indirect
+	github.com/go-rotini/fs v1.0.0 // indirect
+	github.com/go-rotini/jsonc v1.1.0 // indirect
+	github.com/go-rotini/toml v1.1.0 // indirect
+	github.com/go-rotini/yaml v1.2.0 // indirect
 	github.com/go-toolsmith/astcast v1.1.0 // indirect
 	github.com/go-toolsmith/astcopy v1.1.0 // indirect
 	github.com/go-toolsmith/astequal v1.2.0 // indirect

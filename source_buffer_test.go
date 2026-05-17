@@ -10,7 +10,7 @@ func TestNewBufferSource_DecodesViaCodec(t *testing.T) {
 	// JSON decodes integers as float64 — the test uses string and float
 	// payloads to stay independent of int-coercion rules under tests.
 	data := []byte(`{"server": {"port": 8080, "host": "localhost"}}`)
-	s, err := NewBufferSource("buf", "json", data, WithBufferCodec(jsonTestCodec{}))
+	s, err := NewBufferSource("buf", "json", data, WithBufferCodec(JSON))
 	if err != nil {
 		t.Fatalf("NewBufferSource: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestNewBufferSource_MissingCodec(t *testing.T) {
 
 func TestNewBufferSource_DecodeFailure(t *testing.T) {
 	bad := []byte(`{`)
-	_, err := NewBufferSource("buf", "json", bad, WithBufferCodec(jsonTestCodec{}))
+	_, err := NewBufferSource("buf", "json", bad, WithBufferCodec(JSON))
 	if err == nil {
 		t.Fatal("expected decode error, got nil")
 	}
@@ -74,7 +74,7 @@ func TestNewBufferSource_DecodeFailure(t *testing.T) {
 }
 
 func TestNewBufferSource_FormatAndCodecAccessors(t *testing.T) {
-	s, err := NewBufferSource("buf", "json", []byte(`{}`), WithBufferCodec(jsonTestCodec{}))
+	s, err := NewBufferSource("buf", "json", []byte(`{}`), WithBufferCodec(JSON))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestNewBufferSource_FormatAndCodecAccessors(t *testing.T) {
 }
 
 func TestNewBufferSource_EmptyData(t *testing.T) {
-	s, err := NewBufferSource("buf", "json", nil, WithBufferCodec(jsonTestCodec{}))
+	s, err := NewBufferSource("buf", "json", nil, WithBufferCodec(JSON))
 	if err != nil {
 		t.Fatalf("NewBufferSource(nil data): %v", err)
 	}
