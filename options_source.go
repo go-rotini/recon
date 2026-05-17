@@ -1,5 +1,7 @@
 package recon
 
+import "time"
+
 // Per-source option types. Each source constructor (FileSource, BufferSource,
 // StdinSource, OSEnvSource, …) declares its own option type so the compiler
 // can enforce "this option only applies to that source." A future source
@@ -62,7 +64,11 @@ type (
 		transform func(flagName string) Path
 	}
 
-	remoteOptions struct{}
+	remoteOptions struct {
+		prefix     string
+		poll       time.Duration
+		trimPrefix bool
+	}
 )
 
 // bufferCfgCodec is the read-side accessor used by [NewBufferSource] to
@@ -161,4 +167,32 @@ func WithFlagPathTransform(fn func(flagName string) Path) FlagOption {
 			o.transform = fn
 		}
 	}
+}
+
+// WithRemotePrefix scopes a [RemoteSource] to keys under prefix. The
+// prefix is supplied verbatim to [RemoteBackend.List]; the cache and
+// every subsequent [Source.Get] are populated against this filtered
+// set.
+//
+// Pair with [WithRemoteTrimPrefix] when the path the registry should
+// surface differs from the prefix the backend stores.
+func WithRemotePrefix(prefix string) RemoteOption {
+	return func(o *remoteOptions) { o.prefix = prefix }
+}
+
+// WithRemotePollInterval enables polling for backends that do NOT
+// implement [BackendWatcher]. A zero / negative interval keeps the
+// source non-polling (the watcher returns a closed channel —
+// "nothing to listen to"). Has no effect on backends that already
+// implement BackendWatcher; the push path is preferred.
+func WithRemotePollInterval(d time.Duration) RemoteOption {
+	return func(o *remoteOptions) { o.poll = d }
+}
+
+// WithRemoteTrimPrefix strips the configured prefix from cached
+// keys before they're exposed to the registry. Useful when the
+// backend stores under "/myapp/" but the registry should see paths
+// without the prefix.
+func WithRemoteTrimPrefix(trim bool) RemoteOption {
+	return func(o *remoteOptions) { o.trimPrefix = trim }
 }
