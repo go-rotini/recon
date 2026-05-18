@@ -42,8 +42,10 @@ func (r *Registry) BindContext(ctx context.Context, target any, opts ...DecodeOp
 	w.walk(rv, r.prefix)
 	// Validator hooks see cfg.ctx so [WithDecodeContext] can override
 	// the BindContext-supplied ctx when callers reach Bind via the
-	// no-ctx alias [Bind].
-	w.runValidatorHooks(cfg.ctx, target)
+	// no-ctx alias [Bind]. cfg.ctx falls back to ctx in
+	// buildDecodeOptions, so this still chains correctly when no
+	// override is supplied.
+	w.runValidatorHooks(cfg.ctx, target) //nolint:contextcheck // intentional: WithDecodeContext override
 
 	// Strict mode: every snapshot key the struct didn't consult is
 	// reported as a *UnknownKeyError, scoped to the registry's prefix.

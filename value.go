@@ -44,7 +44,8 @@ func (k ValueKind) String() string {
 	case NullKind:
 		return "null"
 	case StringKind:
-		return "string"
+		return "string" //nolint:goconst // kind name; goconst counts test-file occurrences
+
 	case IntKind:
 		return "int"
 	case FloatKind:
