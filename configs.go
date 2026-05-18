@@ -6,14 +6,14 @@ import (
 	"sync"
 )
 
-// Configs is a set of named [Registry] instances. Used when an application
-// has multiple independent configuration namespaces — for example, the
-// rotini spec's `configuration_files[]` array where each named entry
-// (`database`, `server`, …) is its own logical configuration with its own
-// precedence, schema, and watch policy.
+// Configs is a set of named [Registry] instances. Used when an
+// application has multiple independent configuration namespaces — a
+// typical example is one logical config per declared "configuration
+// file" (database / server / …), each with its own precedence,
+// schema, and watch policy.
 //
-// Configs is safe for concurrent use. Closing a Configs closes every
-// contained Registry.
+// Configs is safe for concurrent use. Closing a Configs closes
+// every contained Registry.
 type Configs struct {
 	mu      sync.RWMutex
 	byName  map[string]*Registry
@@ -70,10 +70,11 @@ func (c *Configs) Get(name string) (*Registry, bool) {
 	return r, ok
 }
 
-// MustGet panics if name is unknown. The rotini codegen knows statically
-// which names exist (from the spec's `configuration_files[]`) and uses
-// MustGet at call sites where a missing name is a programmer error rather
-// than a runtime condition.
+// MustGet panics if name is unknown. Useful at call sites that
+// know statically which names are registered — a missing name is a
+// programmer error rather than a runtime condition. Code-generators
+// that emit the registration set and then look it up are the
+// canonical caller.
 func (c *Configs) MustGet(name string) *Registry {
 	r, ok := c.Get(name)
 	if !ok {

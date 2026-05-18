@@ -35,6 +35,6 @@
 //
 // # Quick start
 //
-// See the package README and the design document at
-// .docs/RECON_PACKAGE_REQUIREMENTS.md in the go-rotini workspace.
+// See the package README at https://github.com/go-rotini/recon for
+// runnable examples covering every major API.
 package recon

@@ -195,12 +195,13 @@ func (r *Registry) Events() <-chan Event {
 // to ReloadContext(context.Background()).
 func (r *Registry) Reload() error { return r.ReloadContext(context.Background()) }
 
-// ReloadContext is the context-aware Reload — passed through to remote
-// backends during refresh (and, in Phase 8+, to the watch engine's reload
-// path). A canceled ctx aborts the rebuild and returns ctx.Err().
+// ReloadContext is the context-aware [Reload] — the context flows to
+// remote backends during their refresh call. A canceled ctx aborts the
+// rebuild and returns ctx.Err() wrapped.
 //
-// Phase 3 sources (MapSource, BufferSource) do not consult ctx; the
-// parameter exists so the API is stable across future source additions.
+// In-memory sources do not consult ctx; the parameter is reserved for
+// sources that need request-scoped cancellation (remote backends and
+// future I/O-bound sources).
 func (r *Registry) ReloadContext(ctx context.Context) error {
 	if r.state.closed.Load() {
 		return ErrRegistryClosed
@@ -522,7 +523,6 @@ func (r *Registry) rebuildSnapshotLocked() error {
 		secretKeys: cloneStringSet(r.state.secretKeys),
 		redactor:   r.state.opts.secretRedactor,
 		merge:      r.state.opts.merge,
-		requireAll: r.state.opts.requireAll,
 	}
 	candidate := buildSnapshot(is)
 

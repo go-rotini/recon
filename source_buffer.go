@@ -4,14 +4,15 @@ import (
 	"fmt"
 )
 
-// BufferSource is a [Source] backed by bytes plus a [Codec]. The bytes are
-// decoded once at construction; subsequent Get / Keys calls read from the
-// decoded map. Intended for tests, library callers with bytes in hand, and
-// the rotini integration's "stdin was piped as YAML" pattern.
+// BufferSource is a [Source] backed by bytes plus a [Codec]. The
+// bytes are decoded once at construction; subsequent Get / Keys
+// calls read from the decoded map. Intended for tests, library
+// callers with bytes already in hand, and the "stdin was piped as
+// YAML" / "this string holds the config blob" patterns.
 //
-// BufferSource is a thin wrapper over [MapSource] — once the bytes are
-// decoded, the behavior is identical. The construction-time decode is what
-// distinguishes BufferSource from [NewMapSource].
+// BufferSource is a thin wrapper over [MapSource] — once the bytes
+// are decoded, the behavior is identical. The construction-time
+// decode is what distinguishes BufferSource from [NewMapSource].
 type BufferSource struct {
 	*MapSource
 
@@ -20,15 +21,16 @@ type BufferSource struct {
 }
 
 // NewBufferSource decodes data using the supplied codec (via the
-// [WithBufferCodec] option) and returns a Source named name. The format
-// string is recorded for diagnostic output but does not drive decoding —
-// the codec is authoritative.
+// [WithBufferCodec] option) and returns a Source named name. The
+// format string is recorded for diagnostic output but does not
+// drive decoding — the codec is authoritative.
 //
 // Returns [ErrUnsupportedFormat] when no codec is supplied via
-// [WithBufferCodec]. In Phase 3 there is no registry-side codec set
-// available at source-construction time, so callers must pass the codec
-// explicitly. In Phase 4 onwards, format-named convenience constructors
-// ([YAMLSource], etc.) will pre-wire the matching bundled codec.
+// [WithBufferCodec]. Source construction does not consult the
+// registry's codec set (the registry isn't known here), so callers
+// MUST pass the codec explicitly — or use a format-named
+// convenience constructor ([NewYAMLSource], etc.) when the bytes are
+// in a file.
 func NewBufferSource(name, format string, data []byte, opts ...BufferOption) (Source, error) {
 	cfg := bufferOptions{}
 	for _, opt := range opts {

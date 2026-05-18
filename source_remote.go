@@ -17,10 +17,11 @@ import (
 // [NewInMemoryBackend] for tests.
 //
 // Backends are string-keyed and string-valued: KV stores are the
-// universal lowest-common-denominator. Adapters that hold structured
-// payloads (etcd's JSON blobs, Vault's secret maps) decode the value
-// into a flat key+JSON string before returning it; the registry's
-// `format=` tag option ([Bind] / Phase 6) handles per-field re-decoding.
+// universal lowest-common-denominator. Adapters that hold
+// structured payloads (etcd JSON blobs, Vault secret maps) decode
+// the value into a flat key + JSON string before returning it; the
+// `format=` tag option on the [Registry.Bind] path handles per-
+// field re-decoding.
 type RemoteBackend interface {
 	// List enumerates every key under prefix. An empty prefix lists
 	// every key the backend exposes. The returned slice may be in

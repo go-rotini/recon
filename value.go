@@ -206,6 +206,41 @@ func (v Value) Any() any {
 	return v.raw
 }
 
+// unwrapValueDeep converts a [Value] into the plain-Go shape codecs
+// and JSON encoders expect: scalars become their underlying type,
+// [SliceKind] becomes []any (recursively unwrapped), [MapKind]
+// becomes map[string]any (recursively unwrapped). The function
+// exists because [Value.Any] returns map[string]Value / []Value for
+// compound kinds — useful for further chain-of-Value processing
+// but unfit for direct serialization through encoding/json or the
+// bundled codecs.
+func unwrapValueDeep(v Value) any {
+	switch v.Kind() {
+	case SliceKind:
+		s, ok := v.Any().([]Value)
+		if !ok {
+			return v.Any()
+		}
+		out := make([]any, len(s))
+		for i, el := range s {
+			out[i] = unwrapValueDeep(el)
+		}
+		return out
+	case MapKind:
+		m, ok := v.Any().(map[string]Value)
+		if !ok {
+			return v.Any()
+		}
+		out := make(map[string]any, len(m))
+		for k, el := range m {
+			out[k] = unwrapValueDeep(el)
+		}
+		return out
+	default:
+		return v.Any()
+	}
+}
+
 // String returns the canonical string representation of v for printing.
 // Strings are returned verbatim; other kinds use fmt.Sprint on the underlying
 // value. Use AsString for the strict typed accessor that errors on a

@@ -9,7 +9,7 @@ This package is used as the default configuration and data-in package for [rotin
 - One-line setup: `recon.New(...)` wires the go-rotini family defaults — YAML / TOML / JSONC / JSON / Dotenv codecs, the [go-rotini/fs](https://github.com/go-rotini/fs)-backed file watcher, the [go-rotini/jsonschema](https://github.com/go-rotini/jsonschema)-backed validator — and you're loading config
 - Generic, type-safe API: `Get[T]`, `Bind`, `Live[T]`, `PerSourceFor[T]`, `Configs` — typed values where the type is statically known
 - Pluggable seams: `Codec`, `SchemaValidator`, `WatcherFactory`, `FlagAdapter`, `RemoteBackend`, and `Source` itself — every default is replaceable behind its interface with a one-line option
-- Built-in sources: `NewOSEnvSource`, `NewFileSource` / `NewFileSourceFS`, `YAMLSource` / `TOMLSource` / `JSONCSource` / `JSONSource` / `DotenvSource` (format-named convenience), `NewBufferSource`, `NewMapSource`, `NewStdinSource`, `NewFlagSource`, `NewRemoteSource`
+- Built-in sources: `NewOSEnvSource`, `NewFileSource` / `NewFileSourceFS`, `NewYAMLSource` / `NewTOMLSource` / `NewJSONCSource` / `NewJSONSource` / `NewDotenvSource` (format-named convenience), `NewBufferSource`, `NewMapSource`, `NewStdinSource`, `NewFlagSource`, `NewRemoteSource`
 - Documented precedence chain (explicit → flags → env → config → remote → stdin → defaults) with per-source `WithPrecedence`, per-key `PinSource`, alias graphs with cycle detection
 - Hierarchical keys (`Path`) with bracket-escaping for dotted segments, configurable delimiter, case-sensitive by default
 - Aggregated multi-error reporting with per-field attribution (`*MultiError`) and a `FormatError(r, err)` pretty-printer that surfaces path, source provenance, and the precedence chain; `WithErrorBehavior` toggles `FailCollect` (default) and `FailFast`
@@ -58,7 +58,7 @@ type Config struct {
 
 func main() {
 	envSrc := recon.NewOSEnvSource()
-	fileSrc, err := recon.YAMLSource("config.yaml", recon.WithOptional(true))
+	fileSrc, err := recon.NewYAMLSource("config.yaml", recon.WithOptional(true))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -86,8 +86,8 @@ Source chains are explicit and ordered. The first source to return ok=true for a
 
 ```go
 envSrc := recon.NewOSEnvSource(recon.WithEnvPrefix("APP_"))
-localSrc, _ := recon.DotenvSource(".env.local", recon.WithOptional(true))
-fileSrc, _ := recon.YAMLSource("config.yaml")
+localSrc, _ := recon.NewDotenvSource(".env.local", recon.WithOptional(true))
+fileSrc, _ := recon.NewYAMLSource("config.yaml")
 
 r, err := recon.New(
 	recon.WithSource(envSrc),    // wins by default

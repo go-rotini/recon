@@ -26,9 +26,9 @@ func TestLiveReload_FileSourceEndToEnd(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	src, err := YAMLSource(path)
+	src, err := NewYAMLSource(path)
 	if err != nil {
-		t.Fatalf("YAMLSource: %v", err)
+		t.Fatalf("NewYAMLSource: %v", err)
 	}
 
 	// Use PollWatcher to keep the test independent of fs.Watcher's
@@ -128,9 +128,9 @@ func TestLiveReload_AutomaticReloadViaWatchEngine(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	src, err := YAMLSource(path)
+	src, err := NewYAMLSource(path)
 	if err != nil {
-		t.Fatalf("YAMLSource: %v", err)
+		t.Fatalf("NewYAMLSource: %v", err)
 	}
 	r, err := New(
 		WithWatcher(NewPollWatcher(40*time.Millisecond)),
@@ -184,9 +184,9 @@ func TestLiveReload_WatcherInjectedByRegistry(t *testing.T) {
 	if err := writeAll(path, []byte("k: v\n")); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	src, err := YAMLSource(path)
+	src, err := NewYAMLSource(path)
 	if err != nil {
-		t.Fatalf("YAMLSource: %v", err)
+		t.Fatalf("NewYAMLSource: %v", err)
 	}
 	fileSrc := src.(*FileSource)
 	if fileSrc.watcher != nil {

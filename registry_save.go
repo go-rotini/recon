@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	rotinifs "github.com/go-rotini/fs"
@@ -15,6 +16,18 @@ import (
 // [WithSaveFormat]; Save with no [WithSaveFormat] returns a wrapped
 // [ErrUnsupportedFormat] because the [io.Writer] has no path
 // extension to fall back on.
+//
+// The four save-flavored methods cover distinct destinations:
+//
+//   - Save: any [io.Writer] (network socket, buffer, stdout) — needs
+//     [WithSaveFormat] because there's no extension to detect from.
+//   - SaveTo: a file path — atomic write-temp + rename; format
+//     detected from the path's extension.
+//   - SaveString: same payload as Save, returned as a string —
+//     convenience for callers feeding the result back into
+//     templating / logging.
+//   - GenerateTemplate: produces a stub config with defaults
+//     pre-populated — the "myapp config init" entry point.
 //
 // The default policy is "safe to pipe anywhere":
 //
@@ -225,35 +238,90 @@ func (r *Registry) SaveString(opts ...SaveOption) (string, error) {
 	return b.String(), nil
 }
 
-// unwrapValueDeep converts a [Value] into the plain-Go shape codecs
-// expect: scalars become their underlying type, [SliceKind] becomes
-// []any (recursively unwrapped), [MapKind] becomes map[string]any
-// (recursively unwrapped). The function exists because [Value.Any]
-// returns map[string]Value / []Value for compound kinds — useful for
-// further chain-of-Value processing but unfit for direct serialization.
-func unwrapValueDeep(v Value) any {
-	switch v.Kind() {
-	case SliceKind:
-		s, ok := v.Any().([]Value)
-		if !ok {
-			return v.Any()
-		}
-		out := make([]any, len(s))
-		for i, el := range s {
-			out[i] = unwrapValueDeep(el)
-		}
-		return out
-	case MapKind:
-		m, ok := v.Any().(map[string]Value)
-		if !ok {
-			return v.Any()
-		}
-		out := make(map[string]any, len(m))
-		for k, el := range m {
-			out[k] = unwrapValueDeep(el)
-		}
-		return out
-	default:
-		return v.Any()
+// GenerateTemplate emits a stub configuration document populated
+// with the registry's currently-known keys, encoded in the requested
+// format. Used to produce a starter config file (`myapp config init`
+// → `config.example.yaml`) — defaults-included by default; secret-
+// marked keys are redacted unless [WithSaveIncludeSecrets] is set.
+//
+// Returns a wrapped [ErrUnsupportedFormat] when format is unknown to
+// the registry's codec set, or when format is empty.
+func (r *Registry) GenerateTemplate(format string, opts ...SaveOption) ([]byte, error) {
+	if err := r.validateNotClosed(); err != nil {
+		return nil, err
 	}
+	if format == "" {
+		return nil, fmt.Errorf("%w: GenerateTemplate requires a format",
+			ErrUnsupportedFormat)
+	}
+
+	// Reuse the Save machinery: a template is just a Save with
+	// defaults pre-enabled and a specific format pin.
+	cfg := saveOptions{format: format, includeDefaults: true}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	codec, err := r.resolveSaveCodec(cfg.format)
+	if err != nil {
+		return nil, err
+	}
+
+	snap := r.state.snapshot.Load()
+	if snap == nil {
+		b, encErr := codec.Encode(map[string]any{})
+		if encErr != nil {
+			return nil, fmt.Errorf("recon: GenerateTemplate encode: %w", encErr)
+		}
+		return b, nil
+	}
+
+	r.state.mu.Lock()
+	secrets := cloneStringSet(r.state.secretKeys)
+	redactor := r.state.opts.secretRedactor
+	r.state.mu.Unlock()
+
+	payload := buildSavePayload(snap, cfg, secrets, redactor)
+	b, err := codec.Encode(payload)
+	if err != nil {
+		return nil, fmt.Errorf("recon: GenerateTemplate encode (%s): %w",
+			codec.Name(), err)
+	}
+	return b, nil
+}
+
+// TemplateKeys returns the sorted list of paths [GenerateTemplate]
+// would include with the supplied [SaveOption] set. Useful for
+// "myapp config init --keys" tooling that wants to enumerate the
+// fields before generating the file.
+func (r *Registry) TemplateKeys(opts ...SaveOption) []Path {
+	if r.validateNotClosed() != nil {
+		return nil
+	}
+	snap := r.state.snapshot.Load()
+	if snap == nil {
+		return nil
+	}
+	cfg := saveOptions{includeDefaults: true}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	prefix := ParsePath(cfg.onlyPrefix)
+	keys := make([]string, 0, len(snap.keys))
+	for _, p := range snap.keys {
+		ps := p.String()
+		if _, isAlias := snap.aliases[ps]; isAlias {
+			continue
+		}
+		if len(prefix) > 0 && !p.HasPrefix(prefix) {
+			continue
+		}
+		keys = append(keys, ps)
+	}
+	sort.Strings(keys)
+	paths := make([]Path, len(keys))
+	for i, s := range keys {
+		paths[i] = ParsePath(s)
+	}
+	return paths
 }

@@ -33,15 +33,15 @@ func (r *Registry) Set(key string, value any) error {
 	return nil
 }
 
-// SetDefault installs a fallback value for key. Defaults sit BELOW every
-// source — they are consulted only when no source (and no explicit
-// override) supplies the key. Used for compile-time fallbacks and as
-// the translation target for spec-declared defaults the rotini codegen
-// emits.
+// SetDefault installs a fallback value for key. Defaults sit BELOW
+// every source — they are consulted only when no source (and no
+// explicit override) supplies the key. Used for compile-time
+// fallbacks and as the canonical translation target for any
+// declarative-default mechanism layered on top of recon.
 //
-// Same transactional contract as [Set]: nil clears the default, sub-
-// view prefixes apply, the snapshot rebuilds before return, and a
-// validator / immutable failure rolls the mutation back.
+// Same transactional contract as [Set]: nil clears the default,
+// sub-view prefixes apply, the snapshot rebuilds before return, and
+// a validator / immutable failure rolls the mutation back.
 func (r *Registry) SetDefault(key string, value any) error {
 	if err := r.validateNotClosed(); err != nil {
 		return err

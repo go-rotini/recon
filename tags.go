@@ -4,10 +4,11 @@ import (
 	"strings"
 )
 
-// TagName is the default struct-tag the decoder reads. Override per-call via
-// [WithDecodeTag]. The decoder falls back through "env", "json", "yaml",
-// "toml" (in that order) when the primary tag is absent on a field — this is
-// the interop story documented in §6.4 of the requirements.
+// TagName is the default struct-tag the decoder reads. Override
+// per-call via [WithDecodeTag]. The decoder falls back through
+// `env`, `json`, `yaml`, `toml` (in that order) when the primary
+// tag is absent on a field, so existing tagged structs from those
+// ecosystems bind without re-tagging.
 const TagName = "recon"
 
 // fallbackTagNames lists the tag names consulted in order when the primary

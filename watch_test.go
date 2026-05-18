@@ -279,7 +279,7 @@ func TestWatchEngine_DropEventOnFullChannel(t *testing.T) {
 		WithEventBufferSize(1),
 	)
 
-	// Phase 1: fill the buffer + force drops by triggering without
+	// Step 1: fill the buffer + force drops by triggering without
 	// consuming. The buffer capacity is 1, so after the first event
 	// is buffered every subsequent emit drops.
 	for i := range 5 {
@@ -287,7 +287,7 @@ func TestWatchEngine_DropEventOnFullChannel(t *testing.T) {
 		time.Sleep(15 * time.Millisecond)
 	}
 
-	// Phase 2: consume the first (buffered) event, then trigger
+	// Step 2: consume the first (buffered) event, then trigger
 	// another change. The engine's next emit MUST attach a warning
 	// describing the drops that piled up during phase 1.
 	<-r.Events()

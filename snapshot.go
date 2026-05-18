@@ -111,12 +111,19 @@ func (s *Snapshot) SourceFor(p Path) []string {
 	return s.sources[p.String()]
 }
 
-// AsMap returns the snapshot as a nested map[string]any. Paths are split on
-// the canonical delimiter; leaf values are the underlying Go values returned
-// by [Value.Any]. Mutating the returned map does not affect the snapshot.
+// AsMap returns the snapshot as a nested map[string]any. Paths are
+// split on the canonical delimiter; leaf values are the underlying
+// Go values returned by [Value.Any]. Mutating the returned map does
+// not affect the snapshot.
 //
-// Useful for handing the resolved configuration to a [SchemaValidator] or
-// to a format encoder that expects nested maps.
+// AsMap does NOT redact secret-marked values — the validator (and
+// any other downstream consumer) needs to see real data to do its
+// job. Use [Snapshot.String] for a human-readable redacted view, or
+// [Registry.Save] for a serialized redacted view.
+//
+// Useful for handing the resolved configuration to a
+// [SchemaValidator] or to a format encoder that expects nested
+// maps.
 func (s *Snapshot) AsMap() map[string]any {
 	if s == nil {
 		return map[string]any{}
@@ -211,8 +218,6 @@ type snapshotInputs struct {
 	// wins"; [MergeAppend] concatenates slices and deep-merges maps
 	// across the source chain.
 	merge MergeStrategy
-
-	requireAll bool // reserved for the loader's strict-all-keys behavior
 }
 
 // buildSnapshot resolves every key in is and produces a frozen *Snapshot.
@@ -226,9 +231,11 @@ type snapshotInputs struct {
 //  5. Stamp alias entries with the same resolved value so Get(alias) and
 //     Get(canonical) return identical results.
 //
-// In Phase 3 the build is infallible. Phase 4+ codec / source surfaces may
-// reintroduce an error return; callers should treat the current nil-only
-// behavior as transitional.
+// Source-side errors during candidate construction (Source.Get
+// returning a non-nil error) are silently skipped — the registry's
+// [rebuildSnapshotLocked] is responsible for surfacing them through
+// the configured [ErrorBehavior]. buildSnapshot itself is
+// infallible by design.
 func buildSnapshot(is snapshotInputs) *Snapshot {
 	s := &Snapshot{
 		values:      map[string]Value{},

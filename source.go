@@ -1,9 +1,6 @@
 package recon
 
-import (
-	"context"
-	"io"
-)
+import "context"
 
 // Source is the contract every config-data source implements. The registry
 // composes one or more Sources in precedence order and asks each in turn to
@@ -31,9 +28,13 @@ type Source interface {
 	Get(path Path) (Value, bool, error)
 
 	// Keys enumerates every path this source can answer. Used by
-	// [Registry.AllKeys] and [Registry.Describe] for introspection. The
-	// implementation MAY be expensive — the registry calls it sparingly and
-	// caches the result inside snapshots.
+	// [Registry.AllKeys] and [Registry.Describe] for introspection.
+	// The implementation MAY be expensive — the registry calls it
+	// sparingly and caches the result inside snapshots.
+	//
+	// The returned slice MUST NOT be mutated by the caller; sources
+	// are free to alias their internal storage and the registry
+	// treats the result as read-only.
 	Keys() []Path
 
 	// Close releases any resources held by the source (open files, watcher
@@ -53,14 +54,6 @@ type Source interface {
 // goroutine.
 type Watcher interface {
 	Watch(ctx context.Context) (<-chan SourceChange, error)
-}
-
-// Writer is an optional [Source] capability. Sources that implement Writer
-// can be the target of [Registry.Save] for round-tripping the current
-// resolved view back out to bytes (typically: a file source persisting the
-// snapshot back to disk).
-type Writer interface {
-	Save(w io.Writer, opts ...SaveOption) error
 }
 
 // SourceChange is what a [Watcher] emits when a source's content may have

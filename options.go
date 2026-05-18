@@ -15,40 +15,33 @@ type Option func(*registryOptions)
 // are intentionally unexported so the option surface — not the struct — is
 // the public contract. Defaults are applied by [defaultRegistryOptions].
 type registryOptions struct {
-	// Sources & precedence
+	// Sources & precedence.
 	initialSources []Source
 	precedence     []string // explicit order by source name, when set
 
-	// Key handling — recon keys use [DefaultDelimiter] uniformly
-	// and lookups are case-sensitive. The keyNormalizer hook is the
-	// only knob; it runs against every Path before resolution.
-	keyNormalizer func(Path) Path
-
-	// Decoding / strictness
+	// Decoding / strictness.
 	strict        bool
 	errorBehavior ErrorBehavior
 
-	// Live reload
+	// Live reload.
 	reloadDebounce time.Duration
 	eventBufSize   int
 	pollInterval   time.Duration
 
-	// Validation
-	validator  SchemaValidator
-	requireAll bool
+	// Validation.
+	validator SchemaValidator
 
-	// Codec / watcher overrides
+	// Codec / watcher overrides.
 	codecs  *Codecs
 	watcher WatcherFactory
 
-	// Secrets
+	// Secrets.
 	secretRedactor func(string) string
 
-	// Observability
-	logger  *slog.Logger
-	metrics MetricsRecorder
+	// Observability.
+	logger *slog.Logger
 
-	// Merge strategy
+	// Merge strategy.
 	merge MergeStrategy
 
 	// optionErr captures a failure produced by an Option that needs
@@ -58,9 +51,15 @@ type registryOptions struct {
 	optionErr error
 }
 
-// defaultRegistryOptions returns the registryOptions a fresh [Registry] uses
-// before user-supplied options are applied. Defaults are documented in §2.2,
-// §2.5, and §4.15 of the requirements doc.
+// defaultRegistryOptions returns the registryOptions a fresh
+// [Registry] uses before user-supplied options are applied:
+//
+//   - case-sensitive key lookups (always);
+//   - FailCollect error behavior;
+//   - 50ms reload debounce;
+//   - 16-event Events channel buffer;
+//   - MergeShadow merge strategy;
+//   - "***" secret redactor.
 func defaultRegistryOptions() registryOptions {
 	return registryOptions{
 		errorBehavior:  FailCollect,
@@ -75,47 +74,6 @@ func defaultRegistryOptions() registryOptions {
 // values in [Describe] / [Snapshot.String] / error messages. Replace via
 // [WithSecretRedactor].
 func defaultSecretRedactor(string) string { return "***" }
-
-// ErrorBehavior controls how the decoder accumulates per-field errors during
-// a Bind / Unmarshal. Mirrors the rotini spec's `validation.behavior` key
-// (see §5.7 of the requirements doc).
-type ErrorBehavior int
-
-// ErrorBehavior values.
-const (
-	// FailCollect aggregates every per-field error into a *MultiError so
-	// handlers can surface all problems at once. This is the default.
-	FailCollect ErrorBehavior = iota
-	// FailFast stops decoding at the first per-field error.
-	FailFast
-)
-
-// MergeStrategy controls how the registry combines values when multiple
-// sources hold the same key. The default — MergeShadow — replaces lower-
-// precedence values entirely; deep-merge is opt-in.
-type MergeStrategy int
-
-// MergeStrategy values.
-const (
-	// MergeShadow has the higher-precedence source replace the lower's value
-	// in its entirety. No structural merging of maps or slices. This is the
-	// default.
-	MergeShadow MergeStrategy = iota
-	// MergeAppend appends slices and deep-merges maps; scalar values still
-	// shadow.
-	MergeAppend
-	// MergeReplace is an explicit alias for MergeShadow.
-	MergeReplace
-)
-
-// MetricsRecorder is an optional sink for counters / timers the registry
-// emits internally. Implementations should be cheap (no I/O on the hot
-// path); the registry calls these methods inline from the resolution and
-// reload paths.
-type MetricsRecorder interface {
-	IncCounter(name string)
-	ObserveDuration(name string, d time.Duration)
-}
 
 // WithSource registers a single source. Equivalent to [Registry.AddSource]
 // called after construction.
@@ -146,13 +104,6 @@ func WithSources(s ...Source) Option {
 // on option ordering.
 func WithPrecedence(order ...string) Option {
 	return func(o *registryOptions) { o.precedence = append([]string(nil), order...) }
-}
-
-// WithKeyNormalizer installs a transform applied to every Path before it
-// reaches the resolution pipeline. Use sparingly — most key-spelling
-// concerns are better handled by per-source key transforms or aliases.
-func WithKeyNormalizer(fn func(Path) Path) Option {
-	return func(o *registryOptions) { o.keyNormalizer = fn }
 }
 
 // WithStrict enables strict-mode decoding: unknown keys and ambiguous
@@ -224,13 +175,6 @@ func WithSchema(schemaJSON []byte) Option {
 	}
 }
 
-// WithRequireAll declares that every key the registry sees must come from
-// some source — there are no implicit "missing key is fine" lookups. Used
-// when a CLI's spec mandates that every input be supplied.
-func WithRequireAll() Option {
-	return func(o *registryOptions) { o.requireAll = true }
-}
-
 // WithCodec registers (or replaces) a [Codec] in the registry's codec set.
 // Registration is keyed by [Codec.Name] so a user-supplied "yaml" codec
 // shadows the bundled default.
@@ -283,12 +227,6 @@ func WithSecretRedactor(fn func(string) string) Option {
 // (dropped events, source-reload warnings). Default: slog.Default().
 func WithLogger(l *slog.Logger) Option {
 	return func(o *registryOptions) { o.logger = l }
-}
-
-// WithMetrics installs a [MetricsRecorder] for the registry's internal
-// counters / timers.
-func WithMetrics(m MetricsRecorder) Option {
-	return func(o *registryOptions) { o.metrics = m }
 }
 
 // WithMerge controls how overlapping values from multiple sources are

@@ -106,10 +106,10 @@ func (v *JSONSchemaValidator) Validate(snapshot map[string]any) error {
 // rewritten into a [Path] (server.port); the schema keyword
 // ("minimum") becomes the Rule field.
 //
-// Compound applicators (anyOf, $ref, oneOf) carry their nested causes
-// on jsonschema.ValidationError.Causes; we currently flatten just the
-// top-level error per spec call — Phase 11 may add structured
-// presentation of the cause tree.
+// Compound applicators (anyOf, $ref, oneOf) carry their nested
+// causes on jsonschema.ValidationError.Causes; recon currently
+// flattens just the top-level error per failed assertion.
+// Structured presentation of the cause tree is a future extension.
 func translateSchemaError(e *jsonschema.ValidationError) *ValidationError {
 	return &ValidationError{
 		Path: jsonPointerToPath(e.InstanceLocation),

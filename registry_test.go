@@ -296,9 +296,6 @@ func TestRegistry_AllKeysAndIsSet(t *testing.T) {
 		if !r.IsSet(k) {
 			t.Fatalf("IsSet(%q) false", k)
 		}
-		if !r.Has(k) {
-			t.Fatalf("Has(%q) false", k)
-		}
 	}
 	if r.IsSet("missing") {
 		t.Fatal("IsSet(missing) true")

@@ -14,9 +14,9 @@ import "context"
 //   - clean shutdown when ctx is canceled (close the channel, stop any
 //     goroutines, release file descriptors).
 //
-// The bundled implementations are [FSWatcher] (backed by go-rotini/fs,
-// lands Phase 5) and [PollWatcher] (stdlib-only periodic poll, also Phase
-// 5). Both satisfy this interface; users provide their own by implementing
+// The bundled implementations are [FSWatcher] (backed by
+// go-rotini/fs) and [PollWatcher] (stdlib-only periodic poll). Both
+// satisfy this interface; users provide their own by implementing
 // the same one-method shape.
 type WatcherFactory interface {
 	Watch(ctx context.Context, path string) (<-chan SourceChange, error)

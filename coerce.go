@@ -24,9 +24,7 @@ func coerce(v Value, dest reflect.Value, tag FieldTag) error {
 	// UnmarshalText insists on RFC3339Nano and ignores per-field
 	// `layout=` tags; routing time.Time through coerceTime FIRST
 	// keeps the tag honored.
-	if dest.Kind() == reflect.Struct &&
-		dest.Type().PkgPath() == "time" &&
-		dest.Type().Name() == "Time" {
+	if isTimeTime(dest.Type()) {
 		return coerceTime(v, dest, tag)
 	}
 
@@ -132,13 +130,14 @@ func valueAsString(v Value) (string, error) {
 	return fmt.Sprint(v.Any()), nil
 }
 
-// stringFromValueOrDie returns the string carried by a StringKind
-// [Value]. The caller MUST have verified the kind already; the helper
-// panics on misuse so the per-coercion callsite stays one line.
-func stringFromValueOrDie(v Value) string {
+// mustAsString returns the string carried by a StringKind [Value].
+// The caller MUST have verified the kind already; the helper panics
+// on misuse so the per-coercion callsite stays one line. Named in
+// the stdlib `Must` convention ([regexp.MustCompile], [template.Must]).
+func mustAsString(v Value) string {
 	s, err := v.AsString()
 	if err != nil {
-		panic(fmt.Errorf("recon: stringFromValueOrDie on %s: %w", v.Kind(), err))
+		panic(fmt.Errorf("recon: mustAsString on %s: %w", v.Kind(), err))
 	}
 	return s
 }
@@ -175,7 +174,7 @@ func coerceBool(v Value, dest reflect.Value) error {
 		dest.SetBool(b)
 		return nil
 	case StringKind:
-		s := stringFromValueOrDie(v)
+		s := mustAsString(v)
 		b, err := strconv.ParseBool(s)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrCoercion, err)
@@ -260,7 +259,7 @@ func coerceSlice(v Value, dest reflect.Value, tag FieldTag) error {
 		if sep == "" {
 			sep = ","
 		}
-		s := stringFromValueOrDie(v)
+		s := mustAsString(v)
 		if s == "" {
 			dest.Set(reflect.MakeSlice(dest.Type(), 0, 0))
 			return nil
@@ -290,7 +289,7 @@ func coerceSlice(v Value, dest reflect.Value, tag FieldTag) error {
 func coerceBytes(v Value, dest reflect.Value, tag FieldTag) error {
 	switch v.Kind() {
 	case StringKind:
-		s := stringFromValueOrDie(v)
+		s := mustAsString(v)
 		switch {
 		case tag.Base64:
 			b, err := base64.StdEncoding.DecodeString(s)
@@ -363,7 +362,7 @@ func coerceMap(v Value, dest reflect.Value, tag FieldTag) error {
 		if kv == "" {
 			kv = "="
 		}
-		s := stringFromValueOrDie(v)
+		s := mustAsString(v)
 		entries = parseStringMap(s, sep, kv)
 	default:
 		return fmt.Errorf("%w: cannot coerce %s to map",
@@ -423,7 +422,7 @@ func parseStringMap(s, sep, kv string) map[string]Value {
 // before coerce sees them. This branch only fires for struct-typed
 // leaves that need a one-shot decode.
 func coerceStruct(v Value, dest reflect.Value, tag FieldTag) error {
-	if dest.Type() == reflect.TypeFor[time.Time]() {
+	if isTimeTime(dest.Type()) {
 		return coerceTime(v, dest, tag)
 	}
 	if v.Kind() == MapKind {
@@ -506,7 +505,7 @@ func coerceTime(v Value, dest reflect.Value, tag FieldTag) error {
 		dest.Set(reflect.ValueOf(t))
 		return nil
 	case StringKind:
-		s := stringFromValueOrDie(v)
+		s := mustAsString(v)
 		layout := tag.Layout
 		if layout == "" {
 			layout = time.RFC3339
@@ -547,7 +546,7 @@ func valueAsInt64(v Value) (int64, error) {
 		}
 		return int64(f), nil
 	case StringKind:
-		s := stringFromValueOrDie(v)
+		s := mustAsString(v)
 		i, err := strconv.ParseInt(s, 0, 64)
 		if err != nil {
 			return 0, fmt.Errorf("%w: %w", ErrCoercion, err)
@@ -574,7 +573,7 @@ func valueAsFloat64(v Value) (float64, error) {
 	case IntKind:
 		return v.AsFloat64() // Value already widens
 	case StringKind:
-		s := stringFromValueOrDie(v)
+		s := mustAsString(v)
 		f, err := strconv.ParseFloat(s, 64)
 		if err != nil {
 			return 0, fmt.Errorf("%w: %w", ErrCoercion, err)
@@ -600,7 +599,7 @@ func coerceDuration(v Value, dest reflect.Value) error {
 		dest.SetInt(int64(d))
 		return nil
 	case StringKind:
-		s := stringFromValueOrDie(v)
+		s := mustAsString(v)
 		d, err := time.ParseDuration(s)
 		if err != nil {
 			return fmt.Errorf("%w: parse duration %q: %w",
@@ -626,4 +625,12 @@ func coerceDuration(v Value, dest reflect.Value) error {
 // generic int handler.
 func isDurationType(t reflect.Type) bool {
 	return t == reflect.TypeFor[time.Duration]()
+}
+
+// isTimeTime reports whether t is exactly [time.Time]. Centralized
+// so the three call sites that special-case time.Time (the coerce
+// dispatcher, [coerceStruct], and the bind walker's leaf-vs-walk
+// decision) all agree on the same check.
+func isTimeTime(t reflect.Type) bool {
+	return t == reflect.TypeFor[time.Time]()
 }

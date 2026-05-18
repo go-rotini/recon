@@ -21,9 +21,8 @@ type Description struct {
 }
 
 // KeyDescription carries the per-key information [Description]
-// surfaces. The fields mirror §4.13 of the requirements doc; every
-// field can be rendered to a "configurable via" line in help output
-// or to a single row in a `config show` table.
+// surfaces. Every field can be rendered to a "configurable via"
+// line in help output or to a single row in a `config show` table.
 //
 // Value is pre-redacted when [KeyDescription.Secret] is true — the
 // redacted form (typically "***") rides on Value so callers don't

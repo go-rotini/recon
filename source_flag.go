@@ -5,11 +5,10 @@ import (
 	"slices"
 )
 
-// FlagAdapter is the parser-agnostic seam between recon and whatever
-// command-line-flag library a caller uses. recon does NOT pick a flag
-// parser — the stdlib `flag` package, rotini's own argv parser, or
-// any third-party flag library can satisfy the interface from the
-// caller's side.
+// FlagAdapter is the parser-agnostic seam between recon and
+// whatever command-line-flag library a caller uses. recon does NOT
+// pick a flag parser — the stdlib `flag` package or any third-party
+// flag library can satisfy the interface from the caller's side.
 //
 // An adapter reports two things:
 //
@@ -22,10 +21,9 @@ import (
 // free: [FlagSource] calls Names + Lookup on every snapshot rebuild.
 //
 // The "explicitly set" distinction is critical to the precedence
-// chain — see §1.5 "CLI → Env → Config → Default" in the
-// requirements doc. A flag that holds its compile-time default is
-// indistinguishable from "the user did not pass --foo", and the
-// adapter must NOT report it.
+// chain — flags occupy the second-highest layer (above env, above
+// config files), so a flag that holds its compile-time default must
+// NOT be reported, or it would shadow lower sources unconditionally.
 type FlagAdapter interface {
 	// Names returns the list of flags the user explicitly set, in
 	// any order. The returned slice may alias the adapter's

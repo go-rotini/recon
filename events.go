@@ -2,7 +2,7 @@ package recon
 
 import "time"
 
-// Event is delivered on the channel returned by [Registry.Events] (Phase 8+).
+// Event is delivered on the channel returned by [Registry.Events].
 // One Event corresponds to one reload attempt — successful or failed.
 //
 // Successful reloads have Err == nil and Changed populated with the paths

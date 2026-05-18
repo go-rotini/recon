@@ -86,13 +86,20 @@ func (s *OSEnvSource) Get(path Path) (Value, bool, error) {
 	return NewValue(val), true, nil
 }
 
-// Keys enumerates the paths the source has cached. Each env var the
-// source sees is run through the inverse parser to produce a [Path];
-// the prefix (when set) is stripped before parsing.
+// Keys enumerates the paths the source has cached. Each env var
+// the source sees is run through the inverse parser to produce a
+// [Path]; the prefix (when set) is stripped before parsing.
 //
 // First-call enumerates os.Environ; subsequent calls return the
 // cached set. Invoke [OSEnvSource.Refresh] to pick up env-var
 // additions or deletions.
+//
+// Round-trip caveat: the default snake-upper inverse treats every
+// underscore as a path separator, so an env var named `APP_OAUTH2_TOKEN`
+// surfaces as Path{"oauth2","token"} — there's no way to recover
+// the original spelling of underscore-containing segments from the
+// env-var name alone. Supply [WithEnvKeyParser] when your naming
+// convention preserves that information differently.
 func (s *OSEnvSource) Keys() []Path {
 	s.mu.RLock()
 	if s.cached {

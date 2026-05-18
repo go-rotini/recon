@@ -272,9 +272,15 @@ func (e *watchEngine) fireReload(src string) {
 // itself dropped, defeating the whole point of the counter.
 func (e *watchEngine) emit(evt Event) {
 	if dropped := e.dropped.Load(); dropped > 0 {
+		noun := "events were"
+		if dropped == 1 {
+			noun = "event was"
+		}
 		evt.Warnings = append(evt.Warnings, DeprecationWarning{
-			Path:    Path{},
-			Message: pluralizeDropped(dropped),
+			Path: Path{},
+			Message: fmt.Sprintf(
+				"recon: %d reload %s dropped because the Events channel was full",
+				dropped, noun),
 		})
 		select {
 		case e.events <- evt:
@@ -372,13 +378,4 @@ func valuesEqual(a, b Value) bool {
 		return false
 	}
 	return reflect.DeepEqual(a.Any(), b.Any())
-}
-
-// pluralizeDropped formats the dropped-events warning. The drop path
-// is exceptional — fmt's allocator overhead is not a concern here.
-func pluralizeDropped(n int64) string {
-	if n == 1 {
-		return "recon: 1 reload event was dropped because the Events channel was full"
-	}
-	return fmt.Sprintf("recon: %d reload events were dropped because the Events channel was full", n)
 }

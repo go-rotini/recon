@@ -22,9 +22,9 @@ import (
 //     [ErrUnsupportedFormat] — stdin has no extension to fall back on.
 //
 // TTY-safe: if stdin is a TTY (no piped data) and no bytes are
-// available, the constructor still succeeds with an empty source. This
-// matches the rotini integration's "stdin is optional unless data is
-// being piped" expectation.
+// available, the constructor still succeeds with an empty source —
+// matching the "stdin is optional unless data is being piped"
+// expectation most CLIs have.
 func NewStdinSource(format string, opts ...StdinOption) (Source, error) {
 	cfg := stdinOptions{}
 	for _, opt := range opts {

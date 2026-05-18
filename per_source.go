@@ -5,14 +5,13 @@ import (
 	"maps"
 )
 
-// PerSourceEntry is one source's contribution to a single key. The
-// Source field carries the source's name; Value holds the typed
-// projection (post-coercion); IsSet reports whether the source had a
-// value for the key (mirroring [Source.Get]'s ok return); Err
-// carries any coercion-time failure so callers can distinguish "the
-// source didn't have the key" from "the source's value couldn't fit
-// into T".
-type PerSourceEntry[T any] struct {
+// ValueSource is one source's typed contribution to a single key.
+// Source carries the source's name; Value holds the post-coercion
+// projection into T; IsSet reports whether the source had a value
+// for the key (mirroring [Source.Get]'s ok return); Err carries any
+// coercion-time failure so callers can distinguish "the source
+// didn't have the key" from "the source's value couldn't fit into T".
+type ValueSource[T any] struct {
 	Source string
 	Value  T
 	IsSet  bool
@@ -36,33 +35,33 @@ type PerSource[T any] struct {
 	// Sources lists every registered source's contribution in
 	// precedence order. Length matches the registry's source chain
 	// at the moment of the [PerSourceFor] call.
-	Sources []PerSourceEntry[T]
+	Sources []ValueSource[T]
 
 	// Explicit is the value supplied by [Registry.Set]. IsSet is
 	// false when no explicit override exists.
-	Explicit PerSourceEntry[T]
+	Explicit ValueSource[T]
 
 	// Default is the value supplied by [Registry.SetDefault]. IsSet
 	// is false when no default exists.
-	Default PerSourceEntry[T]
+	Default ValueSource[T]
 
 	// Resolved is what [Get][T] would have returned — the winner of
 	// the precedence walk after explicit, pin, source chain, and
 	// default layers were consulted.
-	Resolved PerSourceEntry[T]
+	Resolved ValueSource[T]
 }
 
 // BySource returns the entry contributed by name, or a zero entry
 // with IsSet=false when no source by that name has a value for the
 // key. Convenience accessor for callers that already know which
 // source they care about.
-func (p PerSource[T]) BySource(name string) PerSourceEntry[T] {
+func (p PerSource[T]) BySource(name string) ValueSource[T] {
 	for _, e := range p.Sources {
 		if e.Source == name {
 			return e
 		}
 	}
-	return PerSourceEntry[T]{Source: name}
+	return ValueSource[T]{Source: name}
 }
 
 // PerSourceFor returns the per-source view of key. The registry's
@@ -96,9 +95,9 @@ func PerSourceFor[T any](r *Registry, key string) (PerSource[T], error) {
 	defaultRaw, hasDefault := r.state.defaults[canon]
 	r.state.mu.Unlock()
 
-	out.Sources = make([]PerSourceEntry[T], 0, len(sources))
+	out.Sources = make([]ValueSource[T], 0, len(sources))
 	for _, src := range sources {
-		entry := PerSourceEntry[T]{Source: src.Name()}
+		entry := ValueSource[T]{Source: src.Name()}
 		raw, ok, err := src.Get(path)
 		if err != nil {
 			entry.IsSet = true
@@ -118,7 +117,7 @@ func PerSourceFor[T any](r *Registry, key string) (PerSource[T], error) {
 	if hasExplicit {
 		v := NewValue(explicitRaw).withSource(srcExplicit)
 		val, err := coerceValueTo[T](v)
-		out.Explicit = PerSourceEntry[T]{
+		out.Explicit = ValueSource[T]{
 			Source: srcExplicit, IsSet: true,
 			Value: val, Err: err,
 		}
@@ -126,26 +125,26 @@ func PerSourceFor[T any](r *Registry, key string) (PerSource[T], error) {
 	if hasDefault {
 		v := NewValue(defaultRaw).withSource(srcDefault)
 		val, err := coerceValueTo[T](v)
-		out.Default = PerSourceEntry[T]{
+		out.Default = ValueSource[T]{
 			Source: srcDefault, IsSet: true,
 			Value: val, Err: err,
 		}
 	}
 
 	if val, ok, err := Get[T](r, key); err != nil {
-		out.Resolved = PerSourceEntry[T]{IsSet: ok, Value: val, Err: err}
+		out.Resolved = ValueSource[T]{IsSet: ok, Value: val, Err: err}
 	} else if ok {
 		// Source-name attribution from the snapshot's winner list.
 		if snap := r.state.snapshot.Load(); snap != nil {
 			if srcs := snap.SourceFor(out.Path); len(srcs) > 0 {
-				out.Resolved = PerSourceEntry[T]{
+				out.Resolved = ValueSource[T]{
 					Source: srcs[0], IsSet: true, Value: val,
 				}
 			} else {
-				out.Resolved = PerSourceEntry[T]{IsSet: true, Value: val}
+				out.Resolved = ValueSource[T]{IsSet: true, Value: val}
 			}
 		} else {
-			out.Resolved = PerSourceEntry[T]{IsSet: true, Value: val}
+			out.Resolved = ValueSource[T]{IsSet: true, Value: val}
 		}
 	}
 

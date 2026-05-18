@@ -8,9 +8,9 @@ import "context"
 // concurrent use — the registry may call Validate on every load and reload.
 //
 // The bundled implementation [JSONSchemaValidator] is backed by
-// go-rotini/jsonschema (lands in Phase 5). Users can plug in any other
-// validator — CEL, gojsonschema, a custom DSL — behind this interface via
-// [WithValidator].
+// go-rotini/jsonschema. Users can plug in any other validator —
+// CEL, a custom DSL, an external service — behind this interface
+// via [WithValidator].
 type SchemaValidator interface {
 	Validate(snapshot map[string]any) error
 }
@@ -25,10 +25,11 @@ type Validator interface {
 	Validate() error
 }
 
-// ValidatorContext is like [Validator] but receives the context threaded
-// through the bind path (via [WithDecodeContext] or [Registry.LoadContext]).
-// Implement this in preference to Validator when the validation needs to
-// honor cancellation or carry request-scoped values.
+// ValidatorContext is like [Validator] but receives the context
+// threaded through the bind path (via [WithDecodeContext] or
+// [Registry.BindContext]). Implement this in preference to
+// Validator when the validation needs to honor cancellation or
+// carry request-scoped values.
 type ValidatorContext interface {
 	Validate(ctx context.Context) error
 }

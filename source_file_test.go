@@ -35,9 +35,9 @@ tags:
   - beta
 `)
 
-	src, err := YAMLSource(path)
+	src, err := NewYAMLSource(path)
 	if err != nil {
-		t.Fatalf("YAMLSource: %v", err)
+		t.Fatalf("NewYAMLSource: %v", err)
 	}
 	r := newRegistry(t, WithSource(src))
 
@@ -60,9 +60,9 @@ host = "localhost"
 port = 8080
 debug = true
 `)
-	src, err := TOMLSource(path)
+	src, err := NewTOMLSource(path)
 	if err != nil {
-		t.Fatalf("TOMLSource: %v", err)
+		t.Fatalf("NewTOMLSource: %v", err)
 	}
 	r := newRegistry(t, WithSource(src))
 	if i, _, _ := r.GetInt64("server.port"); i != 8080 {
@@ -72,9 +72,9 @@ debug = true
 
 func TestFileSource_JSONEndToEnd(t *testing.T) {
 	path := writeTempFile(t, "config.json", `{"k": "v"}`)
-	src, err := JSONSource(path)
+	src, err := NewJSONSource(path)
 	if err != nil {
-		t.Fatalf("JSONSource: %v", err)
+		t.Fatalf("NewJSONSource: %v", err)
 	}
 	r := newRegistry(t, WithSource(src))
 	if s, _, _ := r.GetString("k"); s != "v" {
@@ -87,9 +87,9 @@ func TestFileSource_JSONCAcceptsCommentsAndJSON5Ext(t *testing.T) {
 		// inline comment
 		"k": "v",
 	}`)
-	src, err := JSONCSource(path)
+	src, err := NewJSONCSource(path)
 	if err != nil {
-		t.Fatalf("JSONCSource: %v", err)
+		t.Fatalf("NewJSONCSource: %v", err)
 	}
 	r := newRegistry(t, WithSource(src))
 	if s, _, _ := r.GetString("k"); s != "v" {
@@ -99,9 +99,9 @@ func TestFileSource_JSONCAcceptsCommentsAndJSON5Ext(t *testing.T) {
 
 func TestFileSource_DotenvEndToEnd(t *testing.T) {
 	path := writeTempFile(t, "config.env", "PORT=8080\nDATABASE=postgres\n")
-	src, err := DotenvSource(path)
+	src, err := NewDotenvSource(path)
 	if err != nil {
-		t.Fatalf("DotenvSource: %v", err)
+		t.Fatalf("NewDotenvSource: %v", err)
 	}
 	r := newRegistry(t, WithSource(src))
 	if s, _, _ := r.GetString("PORT"); s != "8080" {

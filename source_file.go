@@ -24,11 +24,12 @@ import (
 // to express the full "look in N directories, expand ~, treat missing as
 // no-op" pattern in a single constructor call.
 //
-// FileSource implements [Watcher] when constructed against an existing
-// file — the registry-wide [WatcherFactory] (or a per-source override via
-// [WithFileWatcher]) is responsible for emitting [SourceChange] events on
-// every file modification. The Phase 4 watcher factory is wired in
-// Phase 5; until then, FileSource.Watch returns a closed channel.
+// FileSource implements [Watcher] when constructed against an
+// existing file — the registry-wide [WatcherFactory] (or a per-
+// source override via [WithFileWatcher]) is responsible for
+// emitting [SourceChange] events on every file modification. When
+// no factory is configured, [FileSource.Watch] returns a closed
+// channel.
 type FileSource struct {
 	*MapSource
 
@@ -45,8 +46,9 @@ type FileSource struct {
 	// created can pick it up.
 	optional bool
 
-	// watcher is the per-source override, if any. nil means "use the
-	// registry-wide factory" (Phase 5).
+	// watcher is the per-source override, if any. nil means "use
+	// the registry-wide factory" — the registry injects its own
+	// factory at AddSource time when the source has no override.
 	watcher WatcherFactory
 
 	// missing reports whether the source was constructed against a file
@@ -129,9 +131,10 @@ func (s *FileSource) Format() string {
 	return s.codec.Name()
 }
 
-// Reload re-reads the file from disk and swaps the underlying [MapSource]
-// contents atomically. Called by the watcher hookup (Phase 5) on every
-// file-changed event; callers may invoke it directly for manual refresh.
+// Reload re-reads the file from disk and swaps the underlying
+// [MapSource] contents atomically. Called by the watcher hookup on
+// every file-changed event; callers may invoke it directly for
+// manual refresh.
 //
 // On a missing-file outcome with WithOptional set, Reload empties the
 // source's keys without returning an error. On any decode failure the

@@ -11,8 +11,8 @@ import "time"
 // over an unexported settings struct — same shape as registry-level Option.
 
 // FileOption configures a [FileSource] / [FileSourceFS] /
-// format-named-source (YAMLSource, TOMLSource, JSONCSource, JSONSource,
-// DotenvSource) constructor.
+// format-named-source ([NewYAMLSource], [NewTOMLSource],
+// [NewJSONCSource], [NewJSONSource], [NewDotenvSource]) constructor.
 type FileOption func(*fileOptions)
 
 // BufferOption configures a [BufferSource] constructor.

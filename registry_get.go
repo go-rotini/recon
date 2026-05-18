@@ -199,10 +199,6 @@ func (r *Registry) IsSet(key string) bool {
 	return ok
 }
 
-// Has is an alias for [Registry.IsSet]. Provided for callers migrating
-// from libraries that spell the test as `Has`.
-func (r *Registry) Has(key string) bool { return r.IsSet(key) }
-
 // AllKeys returns every key the registry knows about (canonical paths plus
 // alias paths, sorted). For a sub view, only keys under the sub's prefix
 // are returned, with the prefix stripped. Useful for tab-completion and
@@ -242,9 +238,9 @@ func (r *Registry) AllKeys() []string {
 // — see [Value]'s As* methods for the per-kind coercion rules.
 //
 // Supported T: string, bool, int, int64, float64, time.Time,
-// time.Duration, []string, map[string]string, [Value]. Everything else
-// returns ErrTypeMismatch; callers wanting struct-field binding should use
-// [Registry.Bind] (Phase 6).
+// time.Duration, []string, map[string]string, [Value]. Everything
+// else returns ErrTypeMismatch; callers wanting struct-field
+// binding should use [Registry.Bind].
 func Get[T any](r *Registry, key string) (T, bool, error) {
 	var zero T
 	v, ok, err := r.Get(key)
@@ -271,12 +267,14 @@ func MustGet[T any](r *Registry, key string) T {
 	return v
 }
 
-// coerceValueTo dispatches by T's concrete type to the appropriate
-// [Value] As* method. Kept package-private because the dispatch is a
-// shallow switch with no generic-over-generic recursion — adding new
-// arms is a matter of editing this function. Returns the zero T and an
-// error when the value cannot be coerced; an unhandled T returns
-// [ErrTypeMismatch].
+// coerceValueTo is the typed entry point of the type-erased
+// dispatch pair: it forwards to [coerceValueAny] (which switches on
+// T via a zero-value pointer) and type-asserts the returned `any`
+// back into T. Adding a new supported T is a matter of editing the
+// switch in [coerceValueAny].
+//
+// Returns the zero T and an error when the value cannot be coerced;
+// an unhandled T returns a wrapped [ErrTypeMismatch].
 func coerceValueTo[T any](v Value) (T, error) {
 	var zero T
 	out, err := coerceValueAny(v, &zero)
@@ -294,9 +292,12 @@ func coerceValueTo[T any](v Value) (T, error) {
 	return typed, nil
 }
 
-// coerceValueAny is the type-erased half of [coerceValueTo]. The zero
-// pointer carries T's concrete type so the switch can dispatch by type
-// assertion. Returns (any, nil) on success; (nil, err) on coercion failure.
+// coerceValueAny is the type-erased half of [coerceValueTo]. The
+// zero pointer carries T's concrete type so the switch can dispatch
+// by type assertion; the return is `any` to let the caller perform
+// the final T type-assertion in one place.
+//
+// Returns (any, nil) on success; (nil, err) on coercion failure.
 func coerceValueAny[T any](v Value, zero *T) (any, error) {
 	switch any(*zero).(type) {
 	case string:
