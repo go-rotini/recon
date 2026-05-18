@@ -1,8 +1,10 @@
 package recon
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"testing"
 	"time"
@@ -107,5 +109,50 @@ func TestFSWatcher_OverrideViaWithWatcher(t *testing.T) {
 	t.Cleanup(func() { _ = r.Close() })
 	if r.state.opts.watcher != custom {
 		t.Fatalf("WithWatcher override not applied: got %T", r.state.opts.watcher)
+	}
+}
+
+func TestFSWatcher_WithDebounce(t *testing.T) {
+	d := 250 * time.Millisecond
+	w := NewFSWatcher(WithFSWatcherDebounce(d))
+	if w.debounce != d {
+		t.Fatalf("debounce = %v, want %v", w.debounce, d)
+	}
+}
+
+func TestFSWatcher_WithLogger(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	w := NewFSWatcher(WithFSWatcherLogger(logger))
+	if w.logger != logger {
+		t.Fatal("logger not installed by WithFSWatcherLogger")
+	}
+}
+
+func TestFSWatcher_OptionsThreadIntoSubscription(t *testing.T) {
+	// Construct an FSWatcher with all three options set and verify
+	// Watch wires through without error. The internal go-rotini/fs
+	// watcher accepts the options; this catches plumbing breaks.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "watched.yaml")
+	if err := writeAll(path, []byte("k: v\n")); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	w := NewFSWatcher(
+		WithFSWatcherDebounce(10*time.Millisecond),
+		WithFSWatcherPollInterval(50*time.Millisecond),
+		WithFSWatcherLogger(logger),
+	)
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	ch, err := w.Watch(ctx, path)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	if ch == nil {
+		t.Fatal("Watch returned nil channel")
 	}
 }

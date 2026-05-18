@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 func writeTempFile(t *testing.T, name, contents string) string {
@@ -287,4 +288,22 @@ func TestFileSourceFS_MissingFileRequiredErrors(t *testing.T) {
 // writeAll is the stdlib-only file write helper used by these tests.
 func writeAll(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o600)
+}
+
+func TestFileSource_WithFileWatcherOverridesFactory(t *testing.T) {
+	path := writeTempFile(t, "watch.yaml", "k: v\n")
+	custom := NewPollWatcher(50 * time.Millisecond)
+	src, err := NewFileSource(path, WithFileWatcher(custom))
+	if err != nil {
+		t.Fatalf("NewFileSource: %v", err)
+	}
+	t.Cleanup(func() { _ = src.Close() })
+
+	fs, ok := src.(*FileSource)
+	if !ok {
+		t.Fatal("expected *FileSource")
+	}
+	if fs.watcher != custom {
+		t.Fatalf("WithFileWatcher override not applied: got %T", fs.watcher)
+	}
 }

@@ -142,6 +142,83 @@ minimum = 1
 	}
 }
 
+func TestJSONSchemaValidator_JSONCInput(t *testing.T) {
+	// JSONC supports comments and trailing commas; verify the loader
+	// accepts both.
+	v, err := NewJSONSchemaValidatorJSONC([]byte(`{
+		// schema for "port"
+		"type": "object",
+		"properties": {
+			"port": {"type": "integer", "minimum": 1,},
+		},
+		"required": ["port"],
+	}`))
+	if err != nil {
+		t.Fatalf("NewJSONSchemaValidatorJSONC: %v", err)
+	}
+	if err := v.Validate(map[string]any{"port": int64(8080)}); err != nil {
+		t.Fatalf("valid instance: %v", err)
+	}
+	if err := v.Validate(map[string]any{}); err == nil {
+		t.Fatal("required keyword not enforced via JSONC schema")
+	}
+}
+
+func TestJSONSchemaValidator_JSONCInput_CompileFailure(t *testing.T) {
+	_, err := NewJSONSchemaValidatorJSONC([]byte(`{not valid jsonc`))
+	if !errors.Is(err, ErrSchemaInvalid) {
+		t.Fatalf("err = %v, want wrapping ErrSchemaInvalid", err)
+	}
+}
+
+func TestJSONSchemaValidator_YAMLInput_CompileFailure(t *testing.T) {
+	_, err := NewJSONSchemaValidatorYAML([]byte("type: : :\n  bad: ["))
+	if !errors.Is(err, ErrSchemaInvalid) {
+		t.Fatalf("err = %v, want wrapping ErrSchemaInvalid", err)
+	}
+}
+
+func TestJSONSchemaValidator_TOMLInput_CompileFailure(t *testing.T) {
+	_, err := NewJSONSchemaValidatorTOML([]byte("not = valid = toml"))
+	if !errors.Is(err, ErrSchemaInvalid) {
+		t.Fatalf("err = %v, want wrapping ErrSchemaInvalid", err)
+	}
+}
+
+func TestJSONSchemaValidator_FromPreCompiledSchema(t *testing.T) {
+	// Compile the schema once via the standard JSON path, then wrap
+	// the resulting *jsonschema.Schema. Useful for callers that
+	// assembled the schema with their own loader / CompileOptions.
+	base, err := NewJSONSchemaValidator([]byte(`{"type":"object","required":["k"]}`))
+	if err != nil {
+		t.Fatalf("compile base: %v", err)
+	}
+	v := NewJSONSchemaValidatorFromSchema(base.schema)
+	if err := v.Validate(map[string]any{"k": "ok"}); err != nil {
+		t.Fatalf("valid instance: %v", err)
+	}
+	if err := v.Validate(map[string]any{}); err == nil {
+		t.Fatal("required keyword not enforced via pre-compiled schema")
+	}
+}
+
+func TestJSONSchemaValidator_FromNilSchemaIsNoop(t *testing.T) {
+	// Wrapping a nil schema must not panic; Validate is a no-op.
+	v := NewJSONSchemaValidatorFromSchema(nil)
+	if err := v.Validate(map[string]any{"anything": true}); err != nil {
+		t.Fatalf("nil-schema validate should be a no-op, got %v", err)
+	}
+}
+
+func TestJSONSchemaValidator_NilSnapshotTreatedAsEmpty(t *testing.T) {
+	v := mustValidator(t, `{"type":"object","required":["k"]}`)
+	// A nil snapshot is treated as the empty object; required must
+	// fire.
+	if err := v.Validate(nil); err == nil {
+		t.Fatal("required keyword should fire against nil snapshot")
+	}
+}
+
 func TestJSONSchemaValidator_AggregatesMultipleFailures(t *testing.T) {
 	v := mustValidator(t, `{
 		"type": "object",

@@ -147,24 +147,29 @@ func WithSchema(schemaJSON []byte) Option {
 }
 
 // WithCodec registers (or replaces by name) a [Codec] in the
-// registry's codec set.
+// registry's codec set. When called before any other codec option, the
+// option starts from [DefaultCodecs] so the new codec joins (rather
+// than replaces) the bundled defaults. Pair with [WithCodecs] for a
+// clean-slate set.
 func WithCodec(c Codec) Option {
 	return func(o *registryOptions) {
 		if c == nil {
 			return
 		}
 		if o.codecs == nil {
-			o.codecs = NewCodecs()
+			o.codecs = DefaultCodecs()
 		}
 		o.codecs.Register(c)
 	}
 }
 
-// WithoutCodec removes a codec by name.
+// WithoutCodec removes a codec by name. Starts from [DefaultCodecs]
+// when no codec option has been applied yet, matching the "I want the
+// defaults except X" intent.
 func WithoutCodec(name string) Option {
 	return func(o *registryOptions) {
 		if o.codecs == nil {
-			o.codecs = NewCodecs()
+			o.codecs = DefaultCodecs()
 		}
 		o.codecs.Unregister(name)
 	}

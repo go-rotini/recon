@@ -40,7 +40,10 @@ func (r *Registry) BindContext(ctx context.Context, target any, opts ...DecodeOp
 		consulted: map[string]struct{}{},
 	}
 	w.walk(rv, r.prefix)
-	w.runValidatorHooks(ctx, target)
+	// Validator hooks see cfg.ctx so [WithDecodeContext] can override
+	// the BindContext-supplied ctx when callers reach Bind via the
+	// no-ctx alias [Bind].
+	w.runValidatorHooks(cfg.ctx, target)
 
 	// Strict mode: every snapshot key the struct didn't consult is
 	// reported as a *UnknownKeyError, scoped to the registry's prefix.

@@ -201,3 +201,48 @@ func TestMergeShadow_StillFirstSetWins(t *testing.T) {
 		t.Fatalf("MergeShadow tags=%v, want [hi]", tags)
 	}
 }
+
+func TestMergeValues_SliceMapMismatchHighWins(t *testing.T) {
+	// Slice + Map is a type mismatch; default branch returns hi.
+	lo := NewValue([]any{"a", "b"})
+	hi := NewValue(map[string]any{"k": "v"})
+	got := mergeValues(lo, hi)
+	if got.Kind() != MapKind {
+		t.Fatalf("kind=%v, want MapKind (hi)", got.Kind())
+	}
+}
+
+func TestMergeValues_ScalarHighWins(t *testing.T) {
+	lo := NewValue(int64(1))
+	hi := NewValue("two")
+	got := mergeValues(lo, hi)
+	if got.Kind() != StringKind {
+		t.Fatalf("kind=%v, want StringKind (hi)", got.Kind())
+	}
+}
+
+func TestMergeValues_MapWithLoOnlyKey(t *testing.T) {
+	// Keys present only in lo survive untouched.
+	lo := NewValue(map[string]any{"only_lo": "kept", "shared": "lo"})
+	hi := NewValue(map[string]any{"only_hi": "new", "shared": "hi"})
+	got := mergeValues(lo, hi)
+	m, _ := got.AsMap()
+	if m["only_lo"].String() != "kept" {
+		t.Fatalf("only_lo lost: %+v", m)
+	}
+	if m["only_hi"].String() != "new" {
+		t.Fatalf("only_hi missing: %+v", m)
+	}
+	if m["shared"].String() != "hi" {
+		t.Fatalf("shared scalar should be hi: %+v", m)
+	}
+}
+
+func TestMergeValues_NullLoHiWins(t *testing.T) {
+	lo := NewValue(nil)
+	hi := NewValue("only-hi")
+	got := mergeValues(lo, hi)
+	if got.String() != "only-hi" {
+		t.Fatalf("got %q, want only-hi", got.String())
+	}
+}

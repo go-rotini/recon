@@ -722,3 +722,98 @@ func TestBind_UnmarshalerHook(t *testing.T) {
 		t.Fatalf("Got=%q, want recon:x", c.Field.Got)
 	}
 }
+
+func TestUnmarshal_BindAlias(t *testing.T) {
+	// Unmarshal is documented as an alias for Bind; both should
+	// produce the same outcome.
+	type C struct {
+		Port int    `recon:"port"`
+		Host string `recon:"host"`
+	}
+	r := bindRegistry(t, map[string]any{
+		"port": 8080,
+		"host": "example.com",
+	})
+
+	var via1, via2 C
+	if err := r.Bind(&via1); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	if err := r.Unmarshal(&via2); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if via1 != via2 {
+		t.Fatalf("Bind=%+v, Unmarshal=%+v", via1, via2)
+	}
+}
+
+func TestBind_NonPointerRejected(t *testing.T) {
+	r := newRegistry(t)
+	var c struct{ X int }
+	err := r.Bind(c) // by value, not pointer
+	if !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("err = %v, want wrapping ErrInvalidPath", err)
+	}
+}
+
+func TestBind_NilPointerRejected(t *testing.T) {
+	r := newRegistry(t)
+	type C struct{ X int }
+	var p *C
+	err := r.Bind(p)
+	if !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("err = %v, want wrapping ErrInvalidPath", err)
+	}
+}
+
+func TestBind_PointerToNonStructRejected(t *testing.T) {
+	r := newRegistry(t)
+	var n int
+	err := r.Bind(&n)
+	if !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("err = %v, want wrapping ErrInvalidPath", err)
+	}
+}
+
+func TestBind_ClosedRegistry(t *testing.T) {
+	r := newRegistry(t)
+	_ = r.Close()
+	var c struct{ X int }
+	err := r.Bind(&c)
+	if !errors.Is(err, ErrRegistryClosed) {
+		t.Fatalf("err = %v, want ErrRegistryClosed", err)
+	}
+}
+
+func TestUnmarshalKey_BindsSubTree(t *testing.T) {
+	r := bindRegistry(t, map[string]any{
+		"server.port": 8080,
+		"server.host": "example.com",
+		"db.dsn":      "postgres://x",
+	})
+	type Server struct {
+		Port int    `recon:"port"`
+		Host string `recon:"host"`
+	}
+	var s Server
+	if err := r.UnmarshalKey("server", &s); err != nil {
+		t.Fatalf("UnmarshalKey: %v", err)
+	}
+	if s.Port != 8080 || s.Host != "example.com" {
+		t.Fatalf("got %+v", s)
+	}
+}
+
+func TestUnmarshalKey_EmptyKeyBindsWhole(t *testing.T) {
+	type C struct {
+		Port int `recon:"port"`
+	}
+	r := bindRegistry(t, map[string]any{"port": 8080})
+	var c C
+	if err := r.UnmarshalKey("", &c); err != nil {
+		t.Fatalf("UnmarshalKey(empty): %v", err)
+	}
+	if c.Port != 8080 {
+		t.Fatalf("got %+v", c)
+	}
+}

@@ -94,6 +94,12 @@ func TestEmptyValueError(t *testing.T) {
 	if errors.Is(e, diff) {
 		t.Error("different path should not match")
 	}
+	// Error() must mention the path and the source so logs include
+	// both.
+	msg := e.Error()
+	if !strings.Contains(msg, "x") || !strings.Contains(msg, "env") {
+		t.Errorf("Error() = %q, want path and source in the message", msg)
+	}
 }
 
 func TestCoercionError(t *testing.T) {

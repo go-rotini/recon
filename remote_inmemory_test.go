@@ -363,3 +363,66 @@ func TestRemoteSource_RefreshAfterDelete(t *testing.T) {
 		t.Fatal("k still present after delete + refresh")
 	}
 }
+
+func TestMemoryBackend_Snapshot(t *testing.T) {
+	b := NewInMemoryBackend()
+	b.PutAll(map[string]string{
+		"a": "1",
+		"b": "2",
+	})
+	snap := b.Snapshot()
+	if snap["a"] != "1" || snap["b"] != "2" {
+		t.Fatalf("got %+v, want a:1 b:2", snap)
+	}
+	// Snapshot must be independent — mutating the returned map must
+	// not affect the backend.
+	snap["a"] = "999"
+	if v, _, _ := b.Get(t.Context(), "a"); v != "1" {
+		t.Fatalf("backend mutated via snapshot copy: got %q", v)
+	}
+}
+
+func TestMemoryBackend_PutOnClosedBackendIsNoop(t *testing.T) {
+	b := NewInMemoryBackend()
+	if err := b.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Must not panic and must not change state.
+	b.Put("k", "v")
+	b.PutAll(map[string]string{"a": "1"})
+	b.Delete("k")
+	if got := b.Snapshot(); len(got) != 0 {
+		t.Fatalf("closed backend accepted writes: %+v", got)
+	}
+}
+
+func TestMemoryBackend_DeleteUnknownEmitsNoNotification(t *testing.T) {
+	b := NewInMemoryBackend()
+	ch, err := b.Watch(t.Context())
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	b.Delete("never-there") // no-op
+	select {
+	case <-ch:
+		t.Fatal("Delete on unknown key emitted a notification")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestMemoryBackend_WatchOnClosedBackendReturnsClosedChan(t *testing.T) {
+	b := NewInMemoryBackend()
+	_ = b.Close()
+	ch, err := b.Watch(t.Context())
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected closed channel after Close")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Watch on closed backend did not return a closed channel")
+	}
+}

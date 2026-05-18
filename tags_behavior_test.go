@@ -266,3 +266,94 @@ func TestRegistry_DrainWarnings_DrainsExactlyOnce(t *testing.T) {
 		t.Fatalf("second drain got %d, want 0", len(second))
 	}
 }
+
+// ---- transforms -----------------------------------------------------
+
+func TestApplyTransform_AllNamedTransforms(t *testing.T) {
+	cases := []struct {
+		transform string
+		in, want  string
+	}{
+		{"snake", "ServerPort", "server_port"},
+		{"kebab", "ServerPort", "server-port"},
+		{"camel", "server_port", "serverPort"},
+		{"upper", "server.port", "SERVER.PORT"},
+		{"lower", "SERVER.PORT", "server.port"},
+		{"", "ServerPort", "ServerPort"},        // empty → no-op
+		{"unknown", "ServerPort", "ServerPort"}, // unknown → no-op
+	}
+	for _, tc := range cases {
+		t.Run(tc.transform, func(t *testing.T) {
+			if got := applyTransform(tc.in, tc.transform); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestToCamelCase(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"server_port", "serverPort"},
+		{"already_camel_case", "alreadyCamelCase"},
+		{"single", "single"},
+		{"", ""},
+		{"trailing_", "trailing"},
+	}
+	for _, tc := range cases {
+		got := toCamelCase(tc.in)
+		if got != tc.want {
+			t.Errorf("toCamelCase(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestBind_TransformCamel(t *testing.T) {
+	// transform=camel rewrites a snake_case tag name into camelCase
+	// so the source-side spelling can match a camel-cased key.
+	type C struct {
+		Port int `recon:"server_port,transform=camel"`
+	}
+	r := newRegistry(t)
+	_ = r.Set("serverPort", 8080)
+	var c C
+	if err := r.Bind(&c); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	if c.Port != 8080 {
+		t.Fatalf("got %d, want 8080", c.Port)
+	}
+}
+
+func TestBind_TransformKebab(t *testing.T) {
+	type C struct {
+		ServerPort int `recon:",transform=kebab"`
+	}
+	r := newRegistry(t)
+	_ = r.Set("server-port", 8080)
+	var c C
+	if err := r.Bind(&c); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	if c.ServerPort != 8080 {
+		t.Fatalf("got %d, want 8080", c.ServerPort)
+	}
+}
+
+func TestBind_TransformUpperOnMultiSegmentName(t *testing.T) {
+	// A tag.Name carrying the delimiter splits, then transform=upper
+	// rewrites every segment.
+	type C struct {
+		X string `recon:"server.port,transform=upper"`
+	}
+	r := newRegistry(t)
+	_ = r.Set("SERVER.PORT", "yes")
+	var c C
+	if err := r.Bind(&c); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	if c.X != "yes" {
+		t.Fatalf("got %q, want yes", c.X)
+	}
+}
