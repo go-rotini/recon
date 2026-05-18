@@ -11,56 +11,42 @@ import (
 )
 
 // RemoteBackend is the contract an out-of-process configuration store
-// satisfies. Real adapters (etcd, consul, vault, AWS SSM, k8s, …) live
-// in separate go-rotini modules and depend on `recon` core for this
-// interface. The core ships only the interface plus
-// [NewInMemoryBackend] for tests.
+// satisfies. Real adapters (etcd, consul, vault, AWS SSM, k8s) live in
+// separate modules and depend on this interface. The core ships only
+// the interface plus [NewInMemoryBackend] for tests.
 //
-// Backends are string-keyed and string-valued: KV stores are the
-// universal lowest-common-denominator. Adapters that hold
-// structured payloads (etcd JSON blobs, Vault secret maps) decode
-// the value into a flat key + JSON string before returning it; the
-// `format=` tag option on the [Registry.Bind] path handles per-
-// field re-decoding.
+// Backends are string-keyed and string-valued. Adapters with
+// structured payloads should pre-serialize values and rely on the
+// `format=` bind tag for per-field re-decoding.
 type RemoteBackend interface {
 	// List enumerates every key under prefix. An empty prefix lists
-	// every key the backend exposes. The returned slice may be in
-	// any order; [RemoteSource] sorts it when it builds the Keys()
-	// view.
+	// every key.
 	List(ctx context.Context, prefix string) ([]string, error)
 
-	// Get returns the value for key. The bool reports whether the
-	// key is set (an empty string with set=true is "set to empty",
-	// matching Source semantics).
+	// Get returns the value for key. An empty string with set=true is
+	// "set to empty", matching [Source] semantics.
 	Get(ctx context.Context, key string) (string, bool, error)
 
-	// Close releases backend resources (HTTP clients, connection
-	// pools, polling goroutines). Idempotent.
+	// Close releases backend resources. Idempotent.
 	Close() error
 }
 
 // BackendWatcher is the optional [RemoteBackend] capability for
-// push-style notification. Adapters whose backing store sends change
-// events (etcd watch, consul long-poll) implement this; pull-only
-// stores (AWS SSM, environment-style backends) leave it
-// unimplemented and the wrapping [RemoteSource] polls instead.
-//
-// The channel signals "something changed; re-read whatever you care
-// about." Backends MAY coalesce multiple changes into one signal.
-// Watch MUST close the channel when ctx cancels.
+// push-style notification. Pull-only backends omit it and the
+// wrapping [RemoteSource] polls instead. The channel signals
+// "something changed"; backends may coalesce. Watch must close the
+// channel when ctx cancels.
 type BackendWatcher interface {
 	Watch(ctx context.Context) (<-chan struct{}, error)
 }
 
-// RemoteSource is the [Source] wrapping a [RemoteBackend]. On
-// construction it lists + reads every key under the configured
-// prefix and caches the result in memory; subsequent [Source.Get]
-// calls hit the cache (no per-call backend round-trip).
+// RemoteSource wraps a [RemoteBackend] as a [Source]. Construction
+// reads every key under the configured prefix and caches the result;
+// subsequent Get calls hit the cache.
 //
-// Live reload: if the backend implements [BackendWatcher], the source
-// subscribes to it and re-reads on every signal. Otherwise it polls
-// at the interval set by [WithRemotePollInterval] (default off — set
-// the interval explicitly to opt in).
+// Live reload: subscribes to [BackendWatcher] when available;
+// otherwise polls at the [WithRemotePollInterval] cadence (default
+// off — opt in by setting an interval).
 type RemoteSource struct {
 	name    string
 	backend RemoteBackend
@@ -74,12 +60,9 @@ type RemoteSource struct {
 }
 
 // NewRemoteSource constructs a [RemoteSource]. The construction-time
-// read populates the cache; any backend error during this initial
-// read surfaces as a wrapped [SourceError] so the caller can fail
-// fast.
-//
-// Returns a wrapped [ErrInvalidPath] when name is empty or backend
-// is nil.
+// read populates the cache; a backend failure here surfaces as a
+// wrapped [*SourceError]. Returns wrapped [ErrInvalidPath] for an
+// empty name or nil backend.
 func NewRemoteSource(name string, backend RemoteBackend, opts ...RemoteOption) (*RemoteSource, error) {
 	if name == "" {
 		return nil, fmt.Errorf("%w: NewRemoteSource: empty name", ErrInvalidPath)
@@ -105,13 +88,11 @@ func NewRemoteSource(name string, backend RemoteBackend, opts ...RemoteOption) (
 	return s, nil
 }
 
-// Name reports the source's identifier.
+// Name returns the source identifier.
 func (s *RemoteSource) Name() string { return s.name }
 
-// Get looks up path against the cache the source loaded from the
-// backend. Multi-segment paths are joined with "/" — the backend's
-// flat keyspace convention — before lookup. Backends that prefer "."
-// as their delimiter should wrap the source in an alias.
+// Get looks up path against the cache. Multi-segment paths join with
+// "/" — the backend's flat keyspace convention.
 func (s *RemoteSource) Get(path Path) (Value, bool, error) {
 	if len(path) == 0 {
 		return Value{}, false, nil
@@ -126,10 +107,8 @@ func (s *RemoteSource) Get(path Path) (Value, bool, error) {
 	return NewValue(v), true, nil
 }
 
-// Keys returns every key the source has cached. The result is
-// sorted by canonical path string. Aliased / transformed keys are
-// NOT projected here — the path matches the underlying backend's
-// key form (with the prefix stripped when [WithRemoteTrimPrefix] is set).
+// Keys returns every cached key, sorted by canonical path string. The
+// prefix is stripped when [WithRemoteTrimPrefix] is set.
 func (s *RemoteSource) Keys() []Path {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -150,8 +129,7 @@ func (s *RemoteSource) Keys() []Path {
 	return out
 }
 
-// Close releases the backend's resources. The cache is dropped; a
-// closed RemoteSource returns (nil, false, nil) from every Get.
+// Close releases the backend and drops the cache.
 func (s *RemoteSource) Close() error {
 	s.mu.Lock()
 	s.cache = nil
@@ -160,19 +138,12 @@ func (s *RemoteSource) Close() error {
 	return s.backend.Close()
 }
 
-// Refresh re-reads the backend, replacing the cache atomically. The
-// watch loop and external callers both use this for the actual
-// re-read on each notification.
+// Refresh re-reads the backend, replacing the cache atomically.
 func (s *RemoteSource) Refresh(ctx context.Context) error { return s.refresh(ctx) }
 
-// Watch implements the [Watcher] capability. The returned channel
-// emits a [SourceChange] whenever the backend reports activity —
-// via [BackendWatcher.Watch] when available, otherwise via the poll
-// interval configured by [WithRemotePollInterval].
-//
-// A source with neither a BackendWatcher backend nor a configured
-// poll interval returns a closed channel: there's no signal source,
-// so no events can ever fire.
+// Watch implements [Watcher]. Emits a [SourceChange] on every
+// backend-reported activity. A source with neither a [BackendWatcher]
+// backend nor a configured poll interval returns a closed channel.
 func (s *RemoteSource) Watch(ctx context.Context) (<-chan SourceChange, error) {
 	if bw, ok := s.backend.(BackendWatcher); ok {
 		return s.watchPush(ctx, bw)
@@ -185,9 +156,6 @@ func (s *RemoteSource) Watch(ctx context.Context) (<-chan SourceChange, error) {
 	return closed, nil
 }
 
-// watchPush subscribes to the backend's native notification channel
-// and refreshes the cache on each signal. Each refresh produces one
-// downstream [SourceChange]; refresh errors ride along on Err.
 func (s *RemoteSource) watchPush(ctx context.Context, bw BackendWatcher) (<-chan SourceChange, error) {
 	sub, err := bw.Watch(ctx)
 	if err != nil {
@@ -198,17 +166,14 @@ func (s *RemoteSource) watchPush(ctx context.Context, bw BackendWatcher) (<-chan
 	return out, nil
 }
 
-// watchPoll runs a polling loop at s.poll. Used when the backend
-// has no native watch capability.
 func (s *RemoteSource) watchPoll(ctx context.Context) <-chan SourceChange {
 	out := make(chan SourceChange, 1)
 	go func() {
 		defer close(out)
 		ticker := time.NewTicker(s.poll)
 		defer ticker.Stop()
-		var prev map[string]string
 		s.mu.RLock()
-		prev = cloneStringMap(s.cache)
+		prev := cloneStringMap(s.cache)
 		s.mu.RUnlock()
 		for {
 			select {
@@ -238,8 +203,6 @@ func (s *RemoteSource) watchPoll(ctx context.Context) <-chan SourceChange {
 	return out
 }
 
-// fanWatch forwards every BackendWatcher signal through a refresh +
-// downstream emit. Runs as the goroutine for [watchPush].
 func (s *RemoteSource) fanWatch(ctx context.Context, sub <-chan struct{}, out chan<- SourceChange) {
 	defer close(out)
 	for {
@@ -263,10 +226,8 @@ func (s *RemoteSource) fanWatch(ctx context.Context, sub <-chan struct{}, out ch
 	}
 }
 
-// refresh re-reads every key under the source's prefix and atomic-
-// swaps the cache. Returns a wrapped [SourceError] on backend
-// failure so callers can distinguish "remote unreachable" from a
-// malformed-payload outcome.
+// refresh re-reads every key under the source's prefix and swaps the
+// cache. Returns a wrapped [*SourceError] on backend failure.
 func (s *RemoteSource) refresh(ctx context.Context) error {
 	keys, err := s.backend.List(ctx, s.prefix)
 	if err != nil {
@@ -294,10 +255,8 @@ func (s *RemoteSource) refresh(ctx context.Context) error {
 	return nil
 }
 
-// lookupKey is the path→backend-key projection. The default join
-// is "/" (the convention every supported backend uses); the prefix,
-// if any, is re-attached so cache lookups match the keys the
-// refresh stored.
+// lookupKey projects path to the backend's flat key form, joining
+// segments with "/" and re-attaching the prefix when trimKey is set.
 func (s *RemoteSource) lookupKey(path Path) string {
 	joined := strings.Join(path, "/")
 	if s.trimKey && s.prefix != "" {
@@ -306,8 +265,8 @@ func (s *RemoteSource) lookupKey(path Path) string {
 	return joined
 }
 
-// keyToPath is the inverse of [lookupKey] — splits a backend key
-// into a [Path]. Used by [Keys].
+// keyToPath splits a backend key into a [Path], stripping the prefix
+// when trimKey is set.
 func (s *RemoteSource) keyToPath(k string) Path {
 	if s.trimKey && s.prefix != "" {
 		k = strings.TrimPrefix(k, s.prefix)
@@ -318,18 +277,12 @@ func (s *RemoteSource) keyToPath(k string) Path {
 	return Path(strings.Split(k, "/"))
 }
 
-// cloneStringMap returns a shallow copy of m. Used by the polling
-// loop to keep the previous-cache reference stable while the next
-// refresh executes.
 func cloneStringMap(m map[string]string) map[string]string {
 	out := make(map[string]string, len(m))
 	maps.Copy(out, m)
 	return out
 }
 
-// cacheEqual reports whether two cache snapshots represent the same
-// key/value state. Used by the polling loop to decide whether to
-// emit a downstream SourceChange.
 func cacheEqual(a, b map[string]string) bool {
 	if len(a) != len(b) {
 		return false

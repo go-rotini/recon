@@ -5,28 +5,20 @@ import (
 	"fmt"
 )
 
-// jsonCodec is the bundled stdlib-encoding/json codec. JSON's only data
-// shapes — objects, arrays, numbers, strings, booleans, and null — map
-// 1:1 onto the recon leaf-value set; the only normalization step is
-// widening every JSON number to float64 (which encoding/json already does).
-//
-// Numeric int-vs-float fidelity: encoding/json decodes every number as
-// float64. Callers that need int-typed access should use Get[int] or
-// Bind a struct field of int type — coerceValueAny converts via AsInt64.
+// jsonCodec is the bundled encoding/json codec. JSON numbers decode
+// as float64; callers that need int-typed access should use Get[int]
+// or [Bind] into an int-typed field.
 type jsonCodec struct{}
 
-// JSON is the package-level [Codec] for application/json. Registered by
-// [New] in the default codec set; available for explicit selection via
-// [WithFileCodec] / [WithBufferCodec] / [WithStdinCodec].
+// JSON is the [Codec] for application/json. Registered in the default
+// codec set by [New].
 var JSON Codec = jsonCodec{}
 
 func (jsonCodec) Name() string         { return FormatJSON }
 func (jsonCodec) Extensions() []string { return []string{".json"} }
 
-// Decode parses data as a JSON object into a map[string]any. JSON arrays
-// or scalars at the document root are rejected with a wrapped
-// [ErrUnsupportedFormat] because the [Source.Get] contract requires
-// key/value addressing.
+// Decode parses data as a JSON object. Arrays or scalars at the root
+// are rejected with wrapped [ErrUnsupportedFormat].
 func (jsonCodec) Decode(data []byte) (map[string]any, error) {
 	if len(data) == 0 {
 		return map[string]any{}, nil
@@ -43,8 +35,8 @@ func (jsonCodec) Decode(data []byte) (map[string]any, error) {
 	return m, nil
 }
 
-// Encode serializes v as compact JSON. Callers wanting indented output
-// should run the result through [json.Indent] or write a custom codec.
+// Encode serializes v as compact JSON. Indented output should be
+// produced by passing the result through [json.Indent].
 func (jsonCodec) Encode(v map[string]any) ([]byte, error) {
 	b, err := json.Marshal(v)
 	if err != nil {

@@ -5,12 +5,10 @@ import (
 	"maps"
 )
 
-// ValueSource is one source's typed contribution to a single key.
-// Source carries the source's name; Value holds the post-coercion
-// projection into T; IsSet reports whether the source had a value
-// for the key (mirroring [Source.Get]'s ok return); Err carries any
-// coercion-time failure so callers can distinguish "the source
-// didn't have the key" from "the source's value couldn't fit into T".
+// ValueSource is one source's typed contribution to one key. IsSet
+// reports whether the source had a value (mirroring [Source.Get]'s
+// ok return); Err carries any coercion failure so callers can
+// distinguish "didn't have the key" from "wrong shape".
 type ValueSource[T any] struct {
 	Source string
 	Value  T
@@ -19,42 +17,34 @@ type ValueSource[T any] struct {
 }
 
 // PerSource is the per-source view of one key across the registry's
-// entire source chain. Use it when the precedence chain isn't what
-// the caller wants and they need to pick a winner themselves —
-// "env-only in containers", "config-first for daemons", or any other
-// resolve-by-policy logic.
+// entire source chain. Use it when the default precedence isn't what
+// the caller wants and they need to apply their own resolve-by-policy
+// logic ("env wins in containers", "config-first for daemons").
 //
-// The slice in Sources is ordered to match the registry's source
-// chain (first = highest precedence). Explicit / Default model the
-// reserved layers above and below the source chain; Resolved is
-// the answer a normal [Get] would return.
+// Sources is ordered to match the registry's chain (first = highest
+// precedence). Explicit and Default model the reserved layers above
+// and below the chain. Resolved is what [Get] would return.
 type PerSource[T any] struct {
-	// Path is the canonical key the snapshot was queried for.
+	// Path is the canonical key queried.
 	Path Path
 
 	// Sources lists every registered source's contribution in
-	// precedence order. Length matches the registry's source chain
-	// at the moment of the [PerSourceFor] call.
+	// precedence order.
 	Sources []ValueSource[T]
 
-	// Explicit is the value supplied by [Registry.Set]. IsSet is
-	// false when no explicit override exists.
+	// Explicit is the [Registry.Set] override, IsSet=false when none.
 	Explicit ValueSource[T]
 
-	// Default is the value supplied by [Registry.SetDefault]. IsSet
-	// is false when no default exists.
+	// Default is the [Registry.SetDefault] fallback, IsSet=false
+	// when none.
 	Default ValueSource[T]
 
-	// Resolved is what [Get][T] would have returned — the winner of
-	// the precedence walk after explicit, pin, source chain, and
-	// default layers were consulted.
+	// Resolved is what [Get] would have returned.
 	Resolved ValueSource[T]
 }
 
 // BySource returns the entry contributed by name, or a zero entry
-// with IsSet=false when no source by that name has a value for the
-// key. Convenience accessor for callers that already know which
-// source they care about.
+// with IsSet=false when no source by that name has a value.
 func (p PerSource[T]) BySource(name string) ValueSource[T] {
 	for _, e := range p.Sources {
 		if e.Source == name {
@@ -64,18 +54,16 @@ func (p PerSource[T]) BySource(name string) ValueSource[T] {
 	return ValueSource[T]{Source: name}
 }
 
-// PerSourceFor returns the per-source view of key. The registry's
-// source chain is walked once; every source's Get is consulted; the
-// result is coerced into T per the same rules [Get][T] follows.
+// PerSourceFor returns the per-source view of key. Every source is
+// consulted once and the result is coerced into T using the same
+// rules [Get] follows.
 //
-// A source that does not have the key reports IsSet=false. A source
-// whose value cannot be coerced into T reports IsSet=true plus an
-// Err describing the coercion failure — the source HAD a value, but
-// it wasn't usable as T. This split lets caller-side resolve logic
-// distinguish "missing" from "wrong shape".
+// A source without the key reports IsSet=false. A source whose value
+// cannot be coerced into T reports IsSet=true with Err set — caller-
+// side resolve logic can then distinguish "missing" from "wrong
+// shape".
 //
-// Returns an error wrapping [ErrRegistryClosed] when the registry
-// has been closed.
+// Returns a wrapped [ErrRegistryClosed] on a closed registry.
 func PerSourceFor[T any](r *Registry, key string) (PerSource[T], error) {
 	if r == nil {
 		return PerSource[T]{}, fmt.Errorf("%w: PerSourceFor: nil *Registry", ErrInvalidPath)
@@ -134,7 +122,7 @@ func PerSourceFor[T any](r *Registry, key string) (PerSource[T], error) {
 	if val, ok, err := Get[T](r, key); err != nil {
 		out.Resolved = ValueSource[T]{IsSet: ok, Value: val, Err: err}
 	} else if ok {
-		// Source-name attribution from the snapshot's winner list.
+		// Attribute the winner from the snapshot's source chain.
 		if snap := r.state.snapshot.Load(); snap != nil {
 			if srcs := snap.SourceFor(out.Path); len(srcs) > 0 {
 				out.Resolved = ValueSource[T]{
@@ -152,17 +140,11 @@ func PerSourceFor[T any](r *Registry, key string) (PerSource[T], error) {
 }
 
 // PerSourceForPath is the explicit-path twin of [PerSourceFor].
-// Used when the caller already has a [Path] in hand and wants to
-// skip the [ParsePath] step — useful when the path contains
-// segments with embedded delimiters that bracket-escaping would
-// otherwise mangle.
 func PerSourceForPath[T any](r *Registry, p Path) (PerSource[T], error) {
 	return PerSourceFor[T](r, p.String())
 }
 
-// snapshotAliases returns a copy of the registry's alias map under
-// lock. Used by [PerSourceFor] to follow alias chains without
-// holding the mutex during the actual per-source enumeration.
+// snapshotAliases returns a copy of the alias map under lock.
 func (r *Registry) snapshotAliases() map[string]string {
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()

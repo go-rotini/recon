@@ -10,32 +10,24 @@ import (
 	"time"
 )
 
-// coerce converts v into a value assignable to dest. dest MUST be an
-// addressable, settable [reflect.Value]; the caller is responsible for
-// ensuring that (typically by Indirect()ing a pointer field). tag
-// supplies per-field options that affect conversion (Base64 / Hex,
-// custom Separator / KVSeparator, time.Time Layout).
+// coerce converts v into a value assignable to dest. dest must be
+// addressable and settable. tag supplies per-field options
+// (Base64 / Hex, Separator / KVSeparator, time.Time Layout).
 //
-// The function intentionally does NOT handle struct fields — that's the
-// recursive responsibility of [bindWalker]. coerce is for leaf types
+// Struct walking is the bind walker's job; coerce handles leaf types
 // only.
 func coerce(v Value, dest reflect.Value, tag FieldTag) error {
-	// time.Time is a leaf type recon owns end-to-end. The stdlib's
-	// UnmarshalText insists on RFC3339Nano and ignores per-field
-	// `layout=` tags; routing time.Time through coerceTime FIRST
-	// keeps the tag honored.
+	// time.Time is special-cased first: its stdlib UnmarshalText
+	// hardcodes RFC3339Nano and would otherwise mask the tag's
+	// `layout=` option.
 	if isTimeTime(dest.Type()) {
 		return coerceTime(v, dest, tag)
 	}
 
-	// Recon-native Unmarshaler / UnmarshalEnv / encoding.TextUnmarshaler
-	// hooks supersede the built-in coercion rules so a user-defined
-	// type can take over its own decoding.
 	if handled, err := tryUnmarshalerHooks(v, dest); handled {
 		return err
 	}
 
-	// Pointer fields: allocate the pointee, recurse on its element.
 	if dest.Kind() == reflect.Pointer {
 		if dest.IsNil() {
 			dest.Set(reflect.New(dest.Type().Elem()))
@@ -43,8 +35,8 @@ func coerce(v Value, dest reflect.Value, tag FieldTag) error {
 		return coerce(v, dest.Elem(), tag)
 	}
 
-	// time.Duration is technically int64; route it through the
-	// duration parser before the generic int handler swallows it.
+	// time.Duration is an int64 alias; route it before the generic
+	// int handler swallows "30s" as a literal 30.
 	if isDurationType(dest.Type()) {
 		return coerceDuration(v, dest)
 	}
@@ -72,15 +64,9 @@ func coerce(v Value, dest reflect.Value, tag FieldTag) error {
 	}
 }
 
-// tryUnmarshalerHooks attempts to populate dest via one of the
-// well-known unmarshal hooks. The dispatch order is:
-//  1. *T implements [Unmarshaler] — the recon-native shape.
-//  2. *T implements UnmarshalEnv(text string) error — env.Secret and
-//     anything else that wants to look identical to it.
-//  3. *T implements encoding.TextUnmarshaler — the stdlib convention.
-//
-// Returns (handled=true, err) when a hook ran; (handled=false, nil)
-// when none did and the caller should fall back to the built-in rules.
+// tryUnmarshalerHooks tries [Unmarshaler], then UnmarshalEnv, then
+// encoding.TextUnmarshaler. Returns (handled=true, err) when a hook
+// ran; (false, nil) when none matched.
 func tryUnmarshalerHooks(v Value, dest reflect.Value) (bool, error) {
 	if !dest.CanAddr() {
 		return false, nil
@@ -119,10 +105,8 @@ func tryUnmarshalerHooks(v Value, dest reflect.Value) (bool, error) {
 	return false, nil
 }
 
-// valueAsString is the lossy-but-uniform string projection coerce uses
-// when feeding a Value into a hook that wants `string`. It mirrors
-// [Value.AsString] for StringKind and otherwise calls fmt.Sprint on
-// the underlying value — JSON-style.
+// valueAsString returns the string projection of v: a [StringKind]
+// value passes through, anything else goes through fmt.Sprint.
 func valueAsString(v Value) (string, error) {
 	if v.Kind() == StringKind {
 		return v.AsString()
@@ -130,10 +114,8 @@ func valueAsString(v Value) (string, error) {
 	return fmt.Sprint(v.Any()), nil
 }
 
-// mustAsString returns the string carried by a StringKind [Value].
-// The caller MUST have verified the kind already; the helper panics
-// on misuse so the per-coercion callsite stays one line. Named in
-// the stdlib `Must` convention ([regexp.MustCompile], [template.Must]).
+// mustAsString returns the string carried by a [StringKind] v. The
+// caller must have already checked the kind; misuse panics.
 func mustAsString(v Value) string {
 	s, err := v.AsString()
 	if err != nil {
@@ -142,11 +124,9 @@ func mustAsString(v Value) string {
 	return s
 }
 
-// coerceString fills a string-kinded dest. Booleans / numbers / time
-// values flatten through fmt.Sprint so a YAML key with a numeric value
-// can still populate a `string` field — this lenient projection
-// matches the broader expectation that `string` is a "give me
-// whatever, formatted" target rather than a strict type-match.
+// coerceString fills a string destination. Non-string kinds flatten
+// through fmt.Sprint so a numeric or bool value still populates a
+// string field.
 func coerceString(v Value, dest reflect.Value) error {
 	switch v.Kind() {
 	case StringKind:
@@ -161,9 +141,8 @@ func coerceString(v Value, dest reflect.Value) error {
 	return nil
 }
 
-// coerceBool accepts bool-kinded inputs verbatim and string inputs via
-// strconv.ParseBool (which handles "true"/"false"/"1"/"0"/"yes"/"no"
-// case-insensitively per Go convention).
+// coerceBool accepts [BoolKind] directly and [StringKind] via
+// strconv.ParseBool.
 func coerceBool(v Value, dest reflect.Value) error {
 	switch v.Kind() {
 	case BoolKind:
@@ -186,10 +165,8 @@ func coerceBool(v Value, dest reflect.Value) error {
 	}
 }
 
-// coerceInt accepts IntKind directly; FloatKind values must be
-// integral; StringKind goes through strconv.ParseInt (auto-base via
-// the 0 base). Overflow against the destination's bit-width is checked
-// before the assignment.
+// coerceInt fills an int-kinded dest, checking overflow against the
+// destination's bit width.
 func coerceInt(v Value, dest reflect.Value) error {
 	i, err := valueAsInt64(v)
 	if err != nil {
@@ -203,8 +180,7 @@ func coerceInt(v Value, dest reflect.Value) error {
 }
 
 // coerceUint mirrors [coerceInt] for unsigned destinations. Negative
-// inputs are rejected because Go's reflect.Value.SetUint would silently
-// wrap them.
+// inputs are rejected; reflect.Value.SetUint would silently wrap them.
 func coerceUint(v Value, dest reflect.Value) error {
 	i, err := valueAsInt64(v)
 	if err != nil {
@@ -222,9 +198,7 @@ func coerceUint(v Value, dest reflect.Value) error {
 	return nil
 }
 
-// coerceFloat accepts FloatKind, widens IntKind, and parses StringKind
-// through strconv.ParseFloat. Overflow is checked against the
-// destination's bit-width.
+// coerceFloat fills a float-kinded dest, checking overflow.
 func coerceFloat(v Value, dest reflect.Value) error {
 	f, err := valueAsFloat64(v)
 	if err != nil {
@@ -237,10 +211,10 @@ func coerceFloat(v Value, dest reflect.Value) error {
 	return nil
 }
 
-// coerceSlice fills a slice destination from either a SliceKind value
-// (element-wise recursion) or a StringKind value (split on the tag's
-// Separator, defaulting to ","). The []byte special case routes
-// through base64 / hex decoding when the tag opts in.
+// coerceSlice fills a slice destination from a [SliceKind] value
+// (element-wise recursion) or a [StringKind] value (split on
+// tag.Separator, default ","). []byte destinations route through
+// [coerceBytes].
 func coerceSlice(v Value, dest reflect.Value, tag FieldTag) error {
 	if dest.Type().Elem().Kind() == reflect.Uint8 {
 		return coerceBytes(v, dest, tag)
@@ -283,9 +257,8 @@ func coerceSlice(v Value, dest reflect.Value, tag FieldTag) error {
 	return nil
 }
 
-// coerceBytes fills a []byte / [N]byte destination. The tag's Base64
-// / Hex options dictate how a StringKind value is decoded; SliceKind
-// is iterated as a list of byte-valued elements.
+// coerceBytes fills a []byte / [N]byte destination. The tag's Base64 /
+// Hex options dictate how a string input is decoded.
 func coerceBytes(v Value, dest reflect.Value, tag FieldTag) error {
 	switch v.Kind() {
 	case StringKind:
@@ -332,13 +305,9 @@ func coerceBytes(v Value, dest reflect.Value, tag FieldTag) error {
 	}
 }
 
-// coerceMap fills a map[string]V destination. MapKind inputs recurse
-// per-value; StringKind inputs are split as "k=v,k=v" using the tag's
-// Separator (entry delimiter, default ",") and KVSeparator (key-value
-// delimiter, default "=").
-//
-// Non-string map keys are rejected — recon's data model uses
-// string-keyed maps throughout.
+// coerceMap fills a map[string]V destination. [MapKind] recurses
+// per-value; [StringKind] is split as "k=v,k=v" using tag.Separator
+// (default ",") and tag.KVSeparator (default "=").
 func coerceMap(v Value, dest reflect.Value, tag FieldTag) error {
 	if dest.Type().Key().Kind() != reflect.String {
 		return fmt.Errorf("%w: map key must be string, got %s",
@@ -383,8 +352,8 @@ func coerceMap(v Value, dest reflect.Value, tag FieldTag) error {
 }
 
 // parseStringMap splits "k1=v1,k2=v2" into a map[string]Value. Empty
-// entries are skipped; an entry without the KV delimiter contributes
-// (entry, "") so callers see the bare key.
+// entries are dropped; an entry without the KV delimiter contributes
+// (entry, "").
 func parseStringMap(s, sep, kv string) map[string]Value {
 	out := map[string]Value{}
 	for entry := range strings.SplitSeq(s, sep) {
@@ -407,20 +376,9 @@ func parseStringMap(s, sep, kv string) map[string]Value {
 }
 
 // coerceStruct handles the struct shapes coerce sees as leaves:
-// time.Time (a stdlib special case routed to [coerceTime]) and
-// MapKind → struct (the `format=` tag's post-decode path, where a
-// JSON / YAML / TOML blob has been decoded into a map and the
-// destination is a user struct).
-//
-// MapKind → struct walks the destination's exported fields and
-// looks each one up in the source map via [coerceStructFromMap].
-// The struct's `recon`-tagged fields participate; untagged fields
-// fall back to a lowercased Go field name.
-//
-// Plain Go struct fields encountered during a [Registry.Bind] walk
-// do not reach this function — the walker recurses into them
-// before coerce sees them. This branch only fires for struct-typed
-// leaves that need a one-shot decode.
+// time.Time (routed to [coerceTime]) and MapKind → struct (the
+// `format=` post-decode path). Plain struct fields on a [Registry.Bind]
+// target are recursed into by the walker and never reach here.
 func coerceStruct(v Value, dest reflect.Value, tag FieldTag) error {
 	if isTimeTime(dest.Type()) {
 		return coerceTime(v, dest, tag)
@@ -432,15 +390,10 @@ func coerceStruct(v Value, dest reflect.Value, tag FieldTag) error {
 		ErrTypeMismatch, dest.Type())
 }
 
-// coerceStructFromMap populates dest from a MapKind Value's
-// underlying map[string]Value, walking the destination's exported
-// fields one at a time. Used by [coerceStruct] when a `format=`
-// decode produces a map that needs to be projected into a struct.
-//
-// The walk follows the same name-resolution rules as the bind
-// walker: a `recon:"name"` tag wins, then the fallback tag chain
-// (env / json / yaml / toml), then a lowercased Go field name.
-// Nested structs / pointers / slices recurse through coerce.
+// coerceStructFromMap populates dest from a [MapKind] value's
+// underlying map. Field name resolution follows the bind walker:
+// recon tag, then the env / json / yaml / toml fallback chain, then
+// the lowercased Go name.
 func coerceStructFromMap(v Value, dest reflect.Value) error {
 	m, err := v.AsMap()
 	if err != nil {
@@ -467,11 +420,10 @@ func coerceStructFromMap(v Value, dest reflect.Value) error {
 	return nil
 }
 
-// fieldKeyFromTag returns the canonical map-key recon would use to
-// look up sf's value during a [coerceStructFromMap] walk. Mirrors
-// the [bindWalker.segmentsFor] logic but limited to single-segment
-// projections — nested-path tags ("server.port") aren't valid as a
-// single map-key, so the parser collapses them to the first segment.
+// fieldKeyFromTag returns the map-key used to look up sf's value
+// during a [coerceStructFromMap] walk. Multi-segment tag names
+// ("server.port") collapse to the first segment since a map-key is
+// a single string.
 func fieldKeyFromTag(sf reflect.StructField) string {
 	for _, name := range append([]string{TagName}, fallbackTagNames[:]...) {
 		raw, ok := sf.Tag.Lookup(name)
@@ -483,18 +435,15 @@ func fieldKeyFromTag(sf reflect.StructField) string {
 			return ""
 		}
 		if ft.Name != "" {
-			// Single-segment projection: use the first dot-separated
-			// segment so a tagged "server.port" matches against
-			// "server" in the decoded map (rare; documented).
 			return strings.SplitN(ft.Name, ".", 2)[0]
 		}
 	}
 	return strings.ToLower(sf.Name)
 }
 
-// coerceTime fills a time.Time destination. TimeKind passes through
-// untouched; StringKind parses via the tag's Layout (default
-// time.RFC3339) and falls back to a small list of common layouts.
+// coerceTime fills a time.Time destination. [TimeKind] passes through;
+// [StringKind] parses via tag.Layout (default RFC3339) and falls back
+// to RFC3339Nano, DateTime, and DateOnly.
 func coerceTime(v Value, dest reflect.Value, tag FieldTag) error {
 	switch v.Kind() {
 	case TimeKind:
@@ -529,8 +478,8 @@ func coerceTime(v Value, dest reflect.Value, tag FieldTag) error {
 	}
 }
 
-// valueAsInt64 is the shared IntKind / FloatKind / StringKind →
-// int64 projection. Used by [coerceInt] / [coerceUint] / [coerceBytes].
+// valueAsInt64 projects v to int64. Used by [coerceInt], [coerceUint],
+// and [coerceBytes].
 func valueAsInt64(v Value) (int64, error) {
 	switch v.Kind() {
 	case IntKind:
@@ -564,14 +513,13 @@ func valueAsInt64(v Value) (int64, error) {
 	}
 }
 
-// valueAsFloat64 is the shared IntKind / FloatKind / StringKind →
-// float64 projection used by [coerceFloat].
+// valueAsFloat64 projects v to float64. Used by [coerceFloat].
 func valueAsFloat64(v Value) (float64, error) {
 	switch v.Kind() {
 	case FloatKind:
 		return v.AsFloat64()
 	case IntKind:
-		return v.AsFloat64() // Value already widens
+		return v.AsFloat64() // Value widens losslessly
 	case StringKind:
 		s := mustAsString(v)
 		f, err := strconv.ParseFloat(s, 64)
@@ -585,10 +533,9 @@ func valueAsFloat64(v Value) (float64, error) {
 	}
 }
 
-// coerceDuration is split out because time.Duration is technically an
-// int64 type — without an early check, [coerceInt] would happily parse
-// `"30s"` as the int 30 and silently lose the unit. The dispatcher in
-// [coerce] routes time.Duration here before [coerceInt].
+// coerceDuration handles time.Duration destinations. Routed by the
+// coerce dispatcher before [coerceInt] so "30s" is parsed as a
+// duration rather than the integer 30.
 func coerceDuration(v Value, dest reflect.Value) error {
 	switch v.Kind() {
 	case DurationKind:
@@ -620,17 +567,10 @@ func coerceDuration(v Value, dest reflect.Value) error {
 	}
 }
 
-// isDurationType reports whether t is exactly [time.Duration]. Used by
-// the [coerce] dispatcher to route Duration-typed fields away from the
-// generic int handler.
 func isDurationType(t reflect.Type) bool {
 	return t == reflect.TypeFor[time.Duration]()
 }
 
-// isTimeTime reports whether t is exactly [time.Time]. Centralized
-// so the three call sites that special-case time.Time (the coerce
-// dispatcher, [coerceStruct], and the bind walker's leaf-vs-walk
-// decision) all agree on the same check.
 func isTimeTime(t reflect.Type) bool {
 	return t == reflect.TypeFor[time.Time]()
 }

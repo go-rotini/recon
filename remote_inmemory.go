@@ -9,16 +9,12 @@ import (
 )
 
 // MemoryBackend is the reference [RemoteBackend] implementation
-// recon ships for tests and for callers prototyping with no real
-// remote store handy. It is NOT intended for production use —
-// production backends (etcd, consul, vault, …) live in separate
-// go-rotini adapter modules.
+// shipped for tests and local prototyping. Production backends
+// (etcd, consul, vault) live in separate adapter modules.
 //
-// MemoryBackend implements [BackendWatcher] so [RemoteSource] sees a
-// push-style notification path; mutating via [Put] / [Delete] fires
-// the subscription on every active Watch.
-//
-// Safe for concurrent use.
+// Implements [BackendWatcher] so [RemoteSource] sees a push-style
+// notification path; [Put] / [PutAll] / [Delete] fire every active
+// subscription. Safe for concurrent use.
 type MemoryBackend struct {
 	mu     sync.RWMutex
 	data   map[string]string
@@ -26,15 +22,12 @@ type MemoryBackend struct {
 	closed bool
 }
 
-// NewInMemoryBackend constructs an empty [MemoryBackend]. Seed
-// content with [MemoryBackend.Put] / [MemoryBackend.PutAll].
+// NewInMemoryBackend returns an empty [MemoryBackend].
 func NewInMemoryBackend() *MemoryBackend {
 	return &MemoryBackend{data: map[string]string{}}
 }
 
-// Put sets key to value. A pre-existing key is overwritten;
-// subscribers receive a notification. Calling Put on a closed
-// backend is a silent no-op.
+// Put sets key to value and notifies subscribers.
 func (m *MemoryBackend) Put(key, value string) {
 	m.mu.Lock()
 	if m.closed {
@@ -47,10 +40,7 @@ func (m *MemoryBackend) Put(key, value string) {
 	notifyAll(subs)
 }
 
-// PutAll seeds many keys at once. Fires exactly one notification on
-// each active subscription, regardless of how many keys are
-// added — useful for test fixtures that want to drive a single
-// reload event.
+// PutAll seeds many keys with a single notification fanout.
 func (m *MemoryBackend) PutAll(kv map[string]string) {
 	m.mu.Lock()
 	if m.closed {
@@ -63,8 +53,7 @@ func (m *MemoryBackend) PutAll(kv map[string]string) {
 	notifyAll(subs)
 }
 
-// Delete removes key. Subscribers receive a notification when key
-// existed. A delete of a missing key is a no-op (no notification).
+// Delete removes key. Notifies subscribers only when key existed.
 func (m *MemoryBackend) Delete(key string) {
 	m.mu.Lock()
 	if m.closed {
@@ -81,8 +70,8 @@ func (m *MemoryBackend) Delete(key string) {
 	notifyAll(subs)
 }
 
-// List implements [RemoteBackend]. Returns every key under prefix,
-// in sorted order for deterministic output.
+// List implements [RemoteBackend]. Returns matching keys in sorted
+// order.
 func (m *MemoryBackend) List(_ context.Context, prefix string) ([]string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -105,8 +94,7 @@ func (m *MemoryBackend) Get(_ context.Context, key string) (string, bool, error)
 }
 
 // Watch implements [BackendWatcher]. Each call returns a fresh
-// channel; the channel closes when ctx cancels or the backend is
-// closed.
+// channel that closes when ctx cancels or the backend closes.
 func (m *MemoryBackend) Watch(ctx context.Context) (<-chan struct{}, error) {
 	ch := make(chan struct{}, 1)
 	m.mu.Lock()
@@ -134,7 +122,7 @@ func (m *MemoryBackend) Watch(ctx context.Context) (<-chan struct{}, error) {
 	return ch, nil
 }
 
-// Close releases the backend's subscriptions. Idempotent.
+// Close releases subscriptions. Idempotent.
 func (m *MemoryBackend) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -149,9 +137,7 @@ func (m *MemoryBackend) Close() error {
 	return nil
 }
 
-// Snapshot returns a copy of the backend's current data — used by
-// tests that want to verify state without going through the
-// RemoteBackend interface.
+// Snapshot returns a copy of the current data, intended for tests.
 func (m *MemoryBackend) Snapshot() map[string]string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -160,17 +146,13 @@ func (m *MemoryBackend) Snapshot() map[string]string {
 	return out
 }
 
-// notifyAll non-blockingly delivers a tick to every channel. Used
-// by [Put] / [PutAll] / [Delete]; the lock has already been
-// released so subscribers can take the lock on their own refresh
-// path without deadlocking.
+// notifyAll delivers a non-blocking tick to every channel; an already
+// pending notification coalesces.
 func notifyAll(subs []chan struct{}) {
 	for _, c := range subs {
 		select {
 		case c <- struct{}{}:
 		default:
-			// Subscriber already has a pending notification —
-			// coalesce.
 		}
 	}
 }

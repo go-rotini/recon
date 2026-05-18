@@ -7,36 +7,23 @@ import (
 	"sync"
 )
 
-// Codec parses and serializes a single file format. The interface is the
-// seam every Source.Get / Save path uses — the bundled YAML / TOML / JSONC /
-// JSON / Dotenv values implement it, and any user can plug in a third-party
-// parser by implementing the same shape.
+// Codec parses and serializes a single file format. The bundled
+// YAML / TOML / JSONC / JSON / Dotenv values implement it; users plug
+// in third-party parsers by implementing the same shape.
 //
-// # Decode contract
+// Decode returns a nested map[string]any whose leaves are limited to
+// string, bool, int64, float64, time.Time, []any, map[string]any, or
+// nil. Codecs are responsible for widening native numeric types and
+// for converting implementation-specific types (yaml.Node, etc.) at
+// the boundary.
 //
-// Decode returns a nested map[string]any. Leaf values MUST be limited to:
-// string, bool, int64, float64, time.Time, []any, map[string]any, or nil.
-// Codecs are responsible for normalizing their native numeric types into
-// int64 / float64 (e.g., a YAML decoder returning `int` should widen to
-// int64). Decoders SHOULD NOT return implementation-specific types
-// (yaml.Node, toml.Tree, json.RawMessage) — convert at the codec boundary so
-// the registry only ever sees the documented leaf-value set.
+// Encode is the inverse and should be byte-stable for the same input
+// (deterministic key ordering, no whitespace drift) so round-trips
+// reproduce.
 //
-// # Encode contract
-//
-// Encode is the inverse. The output SHOULD be byte-stable for the same input
-// (deterministic key ordering, no trailing-whitespace drift) so round-trips
-// are reproducible.
-//
-// # Name and Extensions
-//
-// Name is the canonical identifier (lowercase, single word) used by
-// [Codecs.Register] for replacement-by-name and by [WithFileFormat] for
-// explicit selection. Extensions is the set of lowercased file extensions
-// (including the leading dot, e.g. []string{".yaml", ".yml"}); the
-// [Codecs.ByExtension] resolver walks this set first, falling back to the
-// package-wide [DetectFormat] map for ambiguous cases. Codecs that exist
-// only for explicit use may return an empty Extensions slice.
+// Name is the canonical lowercase identifier used by [Codecs.Register]
+// and [WithFileFormat]. Extensions is the lowercased set (including
+// the leading dot) consulted by [Codecs.ByExtension].
 type Codec interface {
 	Name() string
 	Extensions() []string
@@ -44,21 +31,19 @@ type Codec interface {
 	Encode(v map[string]any) ([]byte, error)
 }
 
-// Codecs is the registry of [Codec] values a [Registry] consults for
-// file-source decoding and Save encoding. The zero value is unusable;
-// construct with [NewCodecs]. Codecs is safe for concurrent use.
+// Codecs is a registry of [Codec] values. The zero value is unusable;
+// construct with [NewCodecs]. Safe for concurrent use.
 //
-// Registration is keyed by [Codec.Name]: a Register with a duplicate name
-// replaces the prior entry (this is how a user-supplied codec shadows a
-// bundled default — `recon.WithCodec(myYAML{})` simply re-registers under
-// "yaml").
+// Registration is keyed by [Codec.Name]: a Register with a duplicate
+// name replaces the prior entry, letting a user-supplied codec shadow
+// a bundled default.
 type Codecs struct {
 	mu     sync.RWMutex
 	byName map[string]Codec
 }
 
-// NewCodecs returns a Codecs registry pre-populated with the supplied
-// initial codecs. Later codecs with the same Name() shadow earlier ones.
+// NewCodecs returns a [Codecs] pre-populated with initial. Later
+// entries with the same Name shadow earlier ones.
 func NewCodecs(initial ...Codec) *Codecs {
 	c := &Codecs{byName: make(map[string]Codec, len(initial))}
 	for _, codec := range initial {
@@ -67,9 +52,7 @@ func NewCodecs(initial ...Codec) *Codecs {
 	return c
 }
 
-// Register adds (or replaces) a codec keyed by its [Codec.Name]. nil codecs
-// are silently ignored — pass [Codecs.Unregister] instead if you want to
-// remove a default.
+// Register adds or replaces a codec keyed by its Name. Nil is ignored.
 func (c *Codecs) Register(codec Codec) {
 	if codec == nil {
 		return
@@ -79,17 +62,14 @@ func (c *Codecs) Register(codec Codec) {
 	c.byName[codec.Name()] = codec
 }
 
-// Unregister removes the codec with the given name. Names that aren't
-// registered are silently ignored.
+// Unregister removes the codec named name. Unknown names are ignored.
 func (c *Codecs) Unregister(name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.byName, name)
 }
 
-// ByName returns the codec registered under name. Lookup is case-sensitive
-// against the canonical names ("yaml", "toml", "jsonc", "json", "dotenv",
-// plus whatever a user has registered).
+// ByName returns the codec named name. Lookup is case-sensitive.
 func (c *Codecs) ByName(name string) (Codec, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -97,12 +77,9 @@ func (c *Codecs) ByName(name string) (Codec, bool) {
 	return codec, ok
 }
 
-// ByExtension returns the codec whose [Codec.Extensions] includes ext. The
-// lookup is case-insensitive and ext SHOULD include the leading dot
-// (".yaml"). When no registered codec advertises the extension, the
-// package-wide [DetectFormat] fallback is consulted — if it maps the
-// extension to a canonical name and that name is in the registry, the
-// matching codec is returned.
+// ByExtension returns the codec whose [Codec.Extensions] includes ext
+// (case-insensitive, ext should include the leading dot). On miss,
+// the package-wide [DetectFormat] fallback is consulted.
 func (c *Codecs) ByExtension(ext string) (Codec, bool) {
 	ext = strings.ToLower(ext)
 	c.mu.RLock()
@@ -120,8 +97,7 @@ func (c *Codecs) ByExtension(ext string) (Codec, bool) {
 	return nil, false
 }
 
-// Names returns the registered codec names in unspecified order. Callers
-// that need stable ordering should sort the result.
+// Names returns the registered codec names in unspecified order.
 func (c *Codecs) Names() []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -132,9 +108,8 @@ func (c *Codecs) Names() []string {
 	return out
 }
 
-// Clone returns an independent shallow copy of the registry. The codecs
-// themselves are shared (they're stateless by contract), but the lookup map
-// is fresh so a Register on the clone does not affect the original.
+// Clone returns an independent shallow copy. The codecs themselves
+// are shared (stateless by contract); the lookup map is fresh.
 func (c *Codecs) Clone() *Codecs {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

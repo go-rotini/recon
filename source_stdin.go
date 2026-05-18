@@ -6,25 +6,17 @@ import (
 	"os"
 )
 
-// NewStdinSource reads os.Stdin to EOF, decodes the bytes through codec
-// (resolved from format), and returns a [Source] holding the decoded
-// map. The construction is one-shot — there is no incremental decode and
-// no streaming; callers piping a large config into stdin should redirect
-// to a file and use [NewFileSource] instead.
+// NewStdinSource reads os.Stdin to EOF, decodes the bytes through the
+// codec resolved from format (or [WithStdinCodec]), and returns a
+// [Source] holding the decoded map. The construction is one-shot — no
+// streaming, no incremental decode.
 //
-// The source's [Source.Name] is "stdin" so [Snapshot.String] /
-// [Describe] callers can see at a glance where the values came from.
+// Codec resolution: [WithStdinCodec] > codec named by format. A blank
+// format with no [WithStdinCodec] returns wrapped
+// [ErrUnsupportedFormat].
 //
-// Codec resolution:
-//   - [WithStdinCodec] supplies the codec explicitly (wins outright).
-//   - Otherwise format is looked up in [DefaultCodecs] by name.
-//   - A blank format with no [WithStdinCodec] returns a wrapped
-//     [ErrUnsupportedFormat] — stdin has no extension to fall back on.
-//
-// TTY-safe: if stdin is a TTY (no piped data) and no bytes are
-// available, the constructor still succeeds with an empty source —
-// matching the "stdin is optional unless data is being piped"
-// expectation most CLIs have.
+// TTY-safe: when stdin is a TTY with no piped data the constructor
+// returns an empty source rather than blocking.
 func NewStdinSource(format string, opts ...StdinOption) (Source, error) {
 	cfg := stdinOptions{}
 	for _, opt := range opts {
@@ -48,9 +40,6 @@ func NewStdinSource(format string, opts ...StdinOption) (Source, error) {
 	return NewMapSource("stdin", decoded), nil
 }
 
-// resolveStdinCodec dispatches the codec-resolution rules described on
-// [NewStdinSource]. Kept package-private so the public surface is just
-// the constructor.
 func resolveStdinCodec(format string, cfg stdinOptions, codecs *Codecs) (Codec, error) {
 	if cfg.codec != nil {
 		return cfg.codec, nil
@@ -67,15 +56,13 @@ func resolveStdinCodec(format string, cfg stdinOptions, codecs *Codecs) (Codec, 
 	return c, nil
 }
 
-// readStdin reads os.Stdin to EOF. Returns an empty slice (not an error)
-// when stdin is a TTY with no data available — see the TTY-safety note on
-// [NewStdinSource].
+// readStdin returns the bytes piped to os.Stdin, or an empty slice
+// when stdin is a TTY with nothing piped.
 func readStdin() ([]byte, error) {
 	info, err := os.Stdin.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("recon: stat stdin: %w", err)
 	}
-	// Bit ModeCharDevice means stdin is a TTY; nothing piped to us.
 	if (info.Mode() & os.ModeCharDevice) != 0 {
 		return nil, nil
 	}

@@ -1,42 +1,32 @@
 package recon
 
-// Format-named convenience constructors for [FileSource]. Each is a
-// one-line wrapper around [NewFileSource] that pins the codec via
-// [WithFileCodec]. Useful in cases where the file path's extension
-// is missing or misleading (a `.txt` file holding YAML), or when
-// the caller prefers a more discoverable name than
-// "NewFileSource + WithFileCodec(recon.YAML)".
-//
-// Additional [FileOption] values are applied after the codec is
-// pinned and may override it via [WithFileCodec] / [WithFileFormat].
+// Format-named convenience constructors for [FileSource]. Each
+// wraps [NewFileSource] with the codec pinned via [WithFileCodec].
+// Useful when the file extension is missing or misleading.
 
-// NewYAMLSource returns a [FileSource] pre-wired with the [YAML]
-// codec.
+// NewYAMLSource is [NewFileSource] with the [YAML] codec pinned.
 func NewYAMLSource(path string, opts ...FileOption) (Source, error) {
 	return NewFileSource(path, append([]FileOption{WithFileCodec(YAML)}, opts...)...)
 }
 
-// NewTOMLSource returns a [FileSource] pre-wired with the [TOML]
-// codec.
+// NewTOMLSource is [NewFileSource] with the [TOML] codec pinned.
 func NewTOMLSource(path string, opts ...FileOption) (Source, error) {
 	return NewFileSource(path, append([]FileOption{WithFileCodec(TOML)}, opts...)...)
 }
 
-// NewJSONSource returns a [FileSource] pre-wired with the [JSON]
-// codec.
+// NewJSONSource is [NewFileSource] with the [JSON] codec pinned.
 func NewJSONSource(path string, opts ...FileOption) (Source, error) {
 	return NewFileSource(path, append([]FileOption{WithFileCodec(JSON)}, opts...)...)
 }
 
-// NewJSONCSource returns a [FileSource] pre-wired with the [JSONC]
-// codec. Accepts both `.jsonc` and `.json5` files.
+// NewJSONCSource is [NewFileSource] with the [JSONC] codec pinned.
+// Accepts both `.jsonc` and `.json5` files.
 func NewJSONCSource(path string, opts ...FileOption) (Source, error) {
 	return NewFileSource(path, append([]FileOption{WithFileCodec(JSONC)}, opts...)...)
 }
 
-// NewDotenvSource returns a [FileSource] pre-wired with the [Dotenv]
-// codec. The result holds a flat keyspace — `.env` files have no
-// nesting.
+// NewDotenvSource is [NewFileSource] with the [Dotenv] codec pinned.
+// The result holds a flat keyspace.
 func NewDotenvSource(path string, opts ...FileOption) (Source, error) {
 	return NewFileSource(path, append([]FileOption{WithFileCodec(Dotenv)}, opts...)...)
 }

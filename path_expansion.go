@@ -7,29 +7,16 @@ import (
 	"strings"
 )
 
-// expandShellPath runs path through POSIX-shell-style expansion
-// suitable for [FileSource] paths. The supported forms:
+// expandShellPath runs path through POSIX-shell-style expansion:
 //
-//   - `~/...`           → user home + remainder.
-//   - `~name/...`       → name's home + remainder (POSIX only).
-//   - `$VAR`            → os.Getenv("VAR"); unset → empty.
-//   - `${VAR}`          → same.
-//   - `${VAR-def}`      → VAR if set (even when empty), else def.
-//   - `${VAR:-def}`     → VAR if set AND non-empty, else def.
-//   - `${VAR:?msg}`     → VAR if set AND non-empty, else error
-//     wrapping the user-supplied msg.
-//   - `${VAR:+alt}`     → alt if VAR is set AND non-empty, else
-//     empty.
-//   - `${VAR+alt}`      → alt if VAR is set (even when empty), else
-//     empty.
+//   - `~/...`, `~name/...`         → home expansion.
+//   - `$VAR`, `${VAR}`             → env lookup; unset → empty.
+//   - `${VAR-def}`, `${VAR:-def}`  → default fallback.
+//   - `${VAR:?msg}`                → error when unset/empty.
+//   - `${VAR+alt}`, `${VAR:+alt}`  → conditional alt.
 //
-// Recursive expansion is NOT performed: a default value carrying a
-// `$VAR` reference passes through verbatim. This matches POSIX
-// shell behavior and prevents reference cycles in the default
-// expression.
-//
-// A literal `$` not followed by `{` or a valid identifier char is
-// preserved verbatim. Unclosed `${` is preserved verbatim.
+// Expansion is one-pass: a default carrying a `$VAR` reference passes
+// through verbatim. Stray `$` and unclosed `${` are preserved.
 func expandShellPath(path string) (string, error) {
 	if path == "" {
 		return "", nil
@@ -41,13 +28,8 @@ func expandShellPath(path string) (string, error) {
 	return expandVars(expanded)
 }
 
-// expandTilde handles the leading-`~` portion of a path. Forms:
-//
-//   - `~`           → current user's home.
-//   - `~/`          → same + the slash.
-//   - `~user/...`   → user's home + remainder.
-//
-// A `~` that isn't at the start of the path is treated as literal.
+// expandTilde handles a leading `~` or `~user`. A `~` mid-path is
+// treated as a literal.
 func expandTilde(path string) (string, error) {
 	if path == "" || path[0] != '~' {
 		return path, nil
@@ -63,7 +45,6 @@ func expandTilde(path string) (string, error) {
 		}
 		return home + path[1:], nil
 	}
-	// ~user/...
 	name := path[1:end]
 	u, err := user.Lookup(name)
 	if err != nil {
@@ -72,8 +53,7 @@ func expandTilde(path string) (string, error) {
 	return u.HomeDir + path[end:], nil
 }
 
-// expandVars walks s and substitutes `$VAR` / `${...}` per the
-// rules documented on [expandShellPath].
+// expandVars walks s and substitutes `$VAR` / `${...}`.
 func expandVars(s string) (string, error) {
 	if !strings.ContainsRune(s, '$') {
 		return s, nil
@@ -101,7 +81,6 @@ func expandVars(s string) (string, error) {
 			b.WriteString(os.Getenv(name))
 			i = end
 		default:
-			// Stray `$` — keep verbatim.
 			b.WriteByte(s[i])
 			i++
 		}
@@ -109,9 +88,8 @@ func expandVars(s string) (string, error) {
 	return b.String(), nil
 }
 
-// expandBraced handles `${...}` at position i in s. Returns the
-// substitution and the number of bytes consumed (including the
-// `${` and the closing `}`).
+// expandBraced handles `${...}` at position i. Returns the
+// substitution and the number of bytes consumed.
 func expandBraced(s string, i int) (string, int, error) {
 	closeIdx := strings.IndexByte(s[i:], '}')
 	if closeIdx < 0 {
@@ -126,13 +104,10 @@ func expandBraced(s string, i int) (string, int, error) {
 	return out, consumed, nil
 }
 
-// evalBraced evaluates the contents of `${...}` per the modifiers
-// documented on [expandShellPath].
+// evalBraced evaluates one `${...}` per the modifier rules.
 func evalBraced(expr string) (string, error) {
-	// Find the operator: one of ":-", ":+", ":?", "-", "+".
 	idx, op := findShellOp(expr)
 	if idx < 0 {
-		// Bare ${VAR}.
 		return os.Getenv(expr), nil
 	}
 	name := expr[:idx]
@@ -170,9 +145,9 @@ func evalBraced(expr string) (string, error) {
 	}
 }
 
-// findShellOp returns the index of the first POSIX-style modifier
-// in expr and the matched operator string. Operators are checked in
-// length-descending order so `:-` doesn't get matched as `-`.
+// findShellOp returns the index and operator of the first POSIX
+// modifier in expr. Longer operators are checked first so `:-` is
+// not matched as `-`.
 func findShellOp(expr string) (int, string) {
 	ops := []string{":-", ":+", ":?", "-", "+"}
 	for _, op := range ops {
@@ -183,8 +158,8 @@ func findShellOp(expr string) (int, string) {
 	return -1, ""
 }
 
-// isVarFirstByte reports whether c can start a `$VAR` name. POSIX
-// shells accept [A-Za-z_]; subsequent chars also allow digits.
+// isVarFirstByte reports whether c can start a `$VAR` name (POSIX
+// [A-Za-z_]).
 func isVarFirstByte(c byte) bool {
 	return c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }

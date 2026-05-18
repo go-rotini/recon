@@ -2,37 +2,29 @@ package recon
 
 import "time"
 
-// Per-source option types. Each source constructor (FileSource, BufferSource,
-// StdinSource, OSEnvSource, …) declares its own option type so the compiler
-// can enforce "this option only applies to that source." A future source
-// addition adds a new option type rather than overloading a single Option.
-//
-// The concrete option types are intentionally simple func-mutation closures
-// over an unexported settings struct — same shape as registry-level Option.
+// Per-source option types. Each source constructor declares its own
+// type so the compiler enforces "this option applies only to that
+// source".
 
-// FileOption configures a [FileSource] / [FileSourceFS] /
-// format-named-source ([NewYAMLSource], [NewTOMLSource],
-// [NewJSONCSource], [NewJSONSource], [NewDotenvSource]) constructor.
+// FileOption configures [FileSource] / [FileSourceFS] and the
+// format-named constructors.
 type FileOption func(*fileOptions)
 
-// BufferOption configures a [BufferSource] constructor.
+// BufferOption configures [NewBufferSource].
 type BufferOption func(*bufferOptions)
 
-// StdinOption configures a [StdinSource] constructor.
+// StdinOption configures [NewStdinSource].
 type StdinOption func(*stdinOptions)
 
-// EnvOption configures an [OSEnvSource] constructor.
+// EnvOption configures [NewOSEnvSource].
 type EnvOption func(*envOptions)
 
-// FlagOption configures a [FlagSource] constructor.
+// FlagOption configures [NewFlagSource].
 type FlagOption func(*flagOptions)
 
-// RemoteOption configures a [RemoteSource] constructor.
+// RemoteOption configures [NewRemoteSource].
 type RemoteOption func(*remoteOptions)
 
-// fileOptions / bufferOptions / stdinOptions / envOptions / remoteOptions
-// are the internal settings structs each source's With* option closures
-// mutate.
 type (
 	fileOptions struct {
 		codec         Codec
@@ -41,9 +33,9 @@ type (
 		format        string
 		pathExpansion bool
 		optional      bool
-		// pathExpansionSet records whether the caller explicitly invoked
-		// WithPathExpansion so the constructor can apply the default-true
-		// only when the caller stayed silent.
+		// pathExpansionSet records whether the caller invoked
+		// [WithPathExpansion] so the default-on stays applied only
+		// when the caller stayed silent.
 		pathExpansionSet bool
 	}
 
@@ -73,39 +65,30 @@ type (
 	}
 )
 
-// bufferCfgCodec is the read-side accessor used by [NewBufferSource] to
-// extract the codec a caller passed via [WithBufferCodec]. Kept package-
-// private so the field on bufferOptions stays unexported.
+// bufferCfgCodec exposes the codec field for [NewBufferSource]
+// without making the field itself exported.
 func bufferCfgCodec(o bufferOptions) Codec { return o.codec }
 
-// WithFileCodec overrides codec resolution for this source. By default a
-// [FileSource] resolves the codec via [Codecs.ByExtension] on the file
-// path; passing WithFileCodec short-circuits that and uses the supplied
-// [Codec] directly.
+// WithFileCodec pins the codec, bypassing extension-based resolution.
 func WithFileCodec(c Codec) FileOption {
 	return func(o *fileOptions) { o.codec = c }
 }
 
-// WithFileWatcher overrides the registry-wide [WatcherFactory] for this
-// source only. Useful when a single file needs a different watching
-// strategy (polling instead of fsnotify, say) than the rest of the
-// configuration.
+// WithFileWatcher overrides the registry-wide [WatcherFactory] for
+// this source only.
 func WithFileWatcher(w WatcherFactory) FileOption {
 	return func(o *fileOptions) { o.watcher = w }
 }
 
-// WithSearchPaths configures [FileSource] to look for the given filename
-// across the named directories in order; the first existing file wins. The
-// constructor's primary `path` argument is used as the filename; the
-// search-paths option supplies the directories. Combine with
-// [WithPathExpansion] for shell-style expansion of each directory.
+// WithSearchPaths makes [FileSource] look for the filename in each
+// directory in order; first existing file wins. The constructor's
+// primary path argument supplies the filename.
 func WithSearchPaths(dirs ...string) FileOption {
 	return func(o *fileOptions) { o.searchPaths = append(o.searchPaths, dirs...) }
 }
 
-// WithPathExpansion controls whether [FileSource] runs paths through POSIX
-// shell-style expansion (`~`, `$VAR`, `${VAR-default}`, `${VAR:-default}`,
-// `${VAR:?msg}`). Default: true.
+// WithPathExpansion controls POSIX-shell expansion of paths (~, $VAR,
+// ${VAR:-default}, ${VAR:?msg}, ${VAR:+alt}). Default true.
 func WithPathExpansion(enabled bool) FileOption {
 	return func(o *fileOptions) {
 		o.pathExpansion = enabled
@@ -113,53 +96,38 @@ func WithPathExpansion(enabled bool) FileOption {
 	}
 }
 
-// WithOptional treats a missing file as a no-op rather than an error. The
-// resulting [Source] is registered but holds no keys. Useful for `.env.local`
-// / `.config.local.yaml`-style optional overrides.
+// WithOptional treats a missing file as a no-op rather than an error.
+// Useful for `.env.local` / `.config.local.yaml` overrides.
 func WithOptional(optional bool) FileOption {
 	return func(o *fileOptions) { o.optional = optional }
 }
 
-// WithFileFormat overrides extension-based codec selection by an explicit
-// codec [Name]. Equivalent to [WithFileCodec] but referenced by name instead
-// of by codec value — useful when the caller doesn't have the codec in scope
-// but knows it's registered.
+// WithFileFormat selects the codec by registered name. Equivalent to
+// [WithFileCodec] but useful when the codec value is not in scope.
 func WithFileFormat(name string) FileOption {
 	return func(o *fileOptions) { o.format = name }
 }
 
-// WithBufferCodec overrides codec resolution for a [BufferSource].
+// WithBufferCodec pins the codec for [NewBufferSource].
 func WithBufferCodec(c Codec) BufferOption {
 	return func(o *bufferOptions) { o.codec = c }
 }
 
-// WithStdinCodec overrides codec resolution for a [StdinSource].
+// WithStdinCodec pins the codec for [NewStdinSource].
 func WithStdinCodec(c Codec) StdinOption {
 	return func(o *stdinOptions) { o.codec = c }
 }
 
-// WithEnvPrefix limits an [OSEnvSource] to environment variables
-// whose name starts with prefix (e.g., "APP_" → only `APP_*` vars
-// are visible). The default key transform projects path
-// `server.port` to `APP_SERVER_PORT` when prefix is `APP_`.
+// WithEnvPrefix limits an [OSEnvSource] to env vars whose name starts
+// with prefix. The default transform then projects "server.port" to
+// "<prefix>SERVER_PORT".
 func WithEnvPrefix(prefix string) EnvOption {
 	return func(o *envOptions) { o.prefix = prefix }
 }
 
 // WithEnvTransform overrides the default path → env-var-name
-// projection. Pair with [WithEnvKeyParser] to teach the source how
-// to project env-var names back into paths for [OSEnvSource.Keys].
-//
-// A nil transform is silently ignored; the default
-// [SnakeUpperPrefixTransform] is retained.
-//
-// Example — keep the recon path verbatim (no case-folding, no
-// underscore-mapping):
-//
-//	r, _ := recon.New(recon.WithSource(recon.NewOSEnvSource(
-//	    recon.WithEnvTransform(recon.IdentityTransform),
-//	    recon.WithEnvKeyParser(recon.ParsePath),
-//	)))
+// projection. Pair with [WithEnvKeyParser] for the inverse used by
+// [OSEnvSource.Keys]. Nil is silently ignored.
 func WithEnvTransform(fn KeyTransform) EnvOption {
 	return func(o *envOptions) {
 		if fn != nil {
@@ -168,14 +136,10 @@ func WithEnvTransform(fn KeyTransform) EnvOption {
 	}
 }
 
-// WithEnvKeyParser overrides the default env-var-name → [Path]
-// projection used by [OSEnvSource.Keys] when enumerating the
-// process environment. The supplied parser receives the env-var
-// name (post-prefix-strip when a prefix is set); returning an empty
-// Path causes the variable to be skipped from the source's keys.
-//
-// A nil parser is silently ignored; the default snake-upper inverse
-// is retained.
+// WithEnvKeyParser overrides the env-var-name → [Path] projection
+// used by [OSEnvSource.Keys]. The parser receives the name with any
+// configured prefix already stripped; returning an empty Path skips
+// the variable. Nil is silently ignored.
 func WithEnvKeyParser(fn func(name string) Path) EnvOption {
 	return func(o *envOptions) {
 		if fn != nil {
@@ -184,9 +148,8 @@ func WithEnvKeyParser(fn func(name string) Path) EnvOption {
 	}
 }
 
-// WithFlagName overrides the default source name ("flags") a
-// [FlagSource] reports. Useful when a registry composes more than
-// one flag adapter — global flags + subcommand flags, say.
+// WithFlagName overrides the default "flags" source name. Useful
+// when composing multiple flag adapters into one registry.
 func WithFlagName(name string) FlagOption {
 	return func(o *flagOptions) {
 		if name != "" {
@@ -196,13 +159,8 @@ func WithFlagName(name string) FlagOption {
 }
 
 // WithFlagPathTransform replaces the default flag-name → [Path]
-// transform with a caller-supplied function. Useful when the flag
-// parser uses a naming convention recon should rewrite — e.g.,
-// `--server-port` should resolve to the path `server.port` instead
-// of the single-segment `server-port`.
-//
-// A nil transform is silently ignored; the previous transform is
-// retained.
+// transform. Useful when "--server-port" should resolve to the path
+// "server.port" rather than the single-segment "server-port".
 func WithFlagPathTransform(fn func(flagName string) Path) FlagOption {
 	return func(o *flagOptions) {
 		if fn != nil {
@@ -211,30 +169,23 @@ func WithFlagPathTransform(fn func(flagName string) Path) FlagOption {
 	}
 }
 
-// WithRemotePrefix scopes a [RemoteSource] to keys under prefix. The
-// prefix is supplied verbatim to [RemoteBackend.List]; the cache and
-// every subsequent [Source.Get] are populated against this filtered
-// set.
-//
-// Pair with [WithRemoteTrimPrefix] when the path the registry should
-// surface differs from the prefix the backend stores.
+// WithRemotePrefix scopes a [RemoteSource] to keys under prefix.
+// Combine with [WithRemoteTrimPrefix] when the registry should see
+// keys without the prefix.
 func WithRemotePrefix(prefix string) RemoteOption {
 	return func(o *remoteOptions) { o.prefix = prefix }
 }
 
-// WithRemotePollInterval enables polling for backends that do NOT
-// implement [BackendWatcher]. A zero / negative interval keeps the
-// source non-polling (the watcher returns a closed channel —
-// "nothing to listen to"). Has no effect on backends that already
-// implement BackendWatcher; the push path is preferred.
+// WithRemotePollInterval enables polling for backends without
+// [BackendWatcher]. A zero or negative interval keeps the source
+// non-polling. Ignored for backends that already implement
+// [BackendWatcher].
 func WithRemotePollInterval(d time.Duration) RemoteOption {
 	return func(o *remoteOptions) { o.poll = d }
 }
 
-// WithRemoteTrimPrefix strips the configured prefix from cached
-// keys before they're exposed to the registry. Useful when the
-// backend stores under "/myapp/" but the registry should see paths
-// without the prefix.
+// WithRemoteTrimPrefix strips the configured prefix from cached keys
+// before they're exposed.
 func WithRemoteTrimPrefix(trim bool) RemoteOption {
 	return func(o *remoteOptions) { o.trimPrefix = trim }
 }

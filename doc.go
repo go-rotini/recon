@@ -1,40 +1,30 @@
-// Package recon is the canonical entry point for every piece of data that
-// comes into a Go program at runtime — environment variables, .env files,
-// configuration files (YAML / TOML / JSONC / JSON), command-line flags,
-// standard input, in-memory buffers, programmatic defaults and overrides,
-// and remote configuration stores (etcd / consul / vault / awsssm / k8s
-// via separate adapter modules).
+// Package recon is the entry point for runtime data — environment
+// variables, .env files, configuration files (YAML / TOML / JSONC /
+// JSON), command-line flags, standard input, in-memory buffers,
+// programmatic defaults and overrides, and remote configuration
+// stores (etcd / consul / vault / awsssm / k8s via separate adapter
+// modules).
 //
-// The name is a deliberate triple-entendre — every reading is accurate:
+// The name is a deliberate triple meaning, each accurate:
 //
-//   - reconnaissance: surveys the runtime environment and gathers what's
-//     there. Done at initial load and on every reload.
-//   - reconciliation: reconciles values across sources via the documented
-//     precedence chain (CLI → Env → Config → Default) and per-key aliases.
-//     Done on every Get / Bind.
-//   - reconfiguration: mutates the live registry — Set, SetDefault,
-//     AddSource, InsertSource, Reload, hot-watch — without re-instantiating.
-//     Done throughout the process lifetime, especially in REPL / daemon /
-//     server modes.
+//   - reconnaissance: surveys the runtime environment on load and
+//     every reload.
+//   - reconciliation: reconciles values across sources via the
+//     documented precedence chain and per-key aliases on every Get
+//     and Bind.
+//   - reconfiguration: mutates the live registry (Set, AddSource,
+//     Reload, hot-watch) without re-instantiating.
 //
-// recon is the runtime data-in service for the rotini CLI framework
-// (github.com/go-rotini/rotini), and works standalone for any Go program.
-//
-// # Design highlights
+// # Design
 //
 //   - No global state. Every operation is on an explicit [*Registry].
-//   - Generics-first: [Get], [Bind], [Live], [PerSource].
-//   - Live by default. Watched sources stream change events on a single
-//     channel; [Live] gives a typed atomic-snapshot view of a config struct.
-//   - Strong defaults, open seams. Every dependency ([Codec],
-//     [SchemaValidator], [WatcherFactory], [FlagAdapter], [RemoteBackend],
-//     [Source]) is an interface; the go-rotini family wires up automatically;
-//     a one-line option replaces any default.
-//   - Minimal third-party footprint. The core depends only on the go-rotini
-//     family (transitively, only fsnotify via go-rotini/fs).
+//   - Generics-first: [Get], [Bind], [Live], [PerSourceFor].
+//   - Live by default. [Live] gives a typed atomic-snapshot view
+//     that re-binds on every successful reload.
+//   - Open seams. [Codec], [SchemaValidator], [WatcherFactory],
+//     [FlagAdapter], [RemoteBackend], and [Source] are interfaces;
+//     one option replaces any default.
 //
-// # Quick start
-//
-// See the package README at https://github.com/go-rotini/recon for
-// runnable examples covering every major API.
+// See the README at https://github.com/go-rotini/recon for runnable
+// examples.
 package recon

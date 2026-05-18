@@ -6,24 +6,22 @@ import (
 	"sync"
 )
 
-// Configs is a set of named [Registry] instances. Used when an
-// application has multiple independent configuration namespaces — a
-// typical example is one logical config per declared "configuration
-// file" (database / server / …), each with its own precedence,
-// schema, and watch policy.
+// Configs is a set of named [Registry] instances. Use when an
+// application has multiple independent configuration namespaces with
+// their own precedence, schema, or watch policy.
 //
-// Configs is safe for concurrent use. Closing a Configs closes
-// every contained Registry.
+// Safe for concurrent use. Closing a Configs closes every contained
+// Registry.
 type Configs struct {
 	mu      sync.RWMutex
 	byName  map[string]*Registry
-	order   []string // registration order; preserved for Names()
+	order   []string // registration order, preserved for [Names]
 	closed  bool
 	closeMu sync.Once
 
-	// events / eventCtx are populated lazily on the first Events()
-	// call; the per-registry forwarders are started under
-	// startForwardersLocked, and Register/Remove keeps them in sync.
+	// events / eventCtx are populated lazily on the first [Events]
+	// call. Register and Remove keep the per-registry forwarders in
+	// sync.
 	events     chan NamedEvent
 	eventCtx   context.Context
 	eventStop  context.CancelFunc
@@ -36,12 +34,11 @@ func NewConfigs() *Configs {
 	return &Configs{byName: map[string]*Registry{}}
 }
 
-// Register attaches r under name. Returns [ErrSourceConflict] when the
-// name is already taken or when name is empty.
+// Register attaches r under name. Returns wrapped [ErrSourceConflict]
+// when the name is taken or empty, [ErrInvalidPath] when r is nil.
 //
-// If [Configs.Events] has already been called, the new registry's
-// Events channel is folded into the multiplexed stream — no need to
-// re-subscribe after each Register.
+// If [Events] has already been called, the new registry is folded
+// into the multiplexed stream automatically.
 func (c *Configs) Register(name string, r *Registry) error {
 	if name == "" {
 		return fmt.Errorf("%w: empty name", ErrSourceConflict)
@@ -70,11 +67,7 @@ func (c *Configs) Get(name string) (*Registry, bool) {
 	return r, ok
 }
 
-// MustGet panics if name is unknown. Useful at call sites that
-// know statically which names are registered — a missing name is a
-// programmer error rather than a runtime condition. Code-generators
-// that emit the registration set and then look it up are the
-// canonical caller.
+// MustGet panics when name is unknown.
 func (c *Configs) MustGet(name string) *Registry {
 	r, ok := c.Get(name)
 	if !ok {
@@ -92,11 +85,9 @@ func (c *Configs) Names() []string {
 	return out
 }
 
-// Remove unregisters and closes the named registry. Idempotent — a name
-// that isn't registered is a no-op. The registry's Close() invocation
-// closes its Events channel, which lets the multiplex engine's
-// per-name forwarder exit on its own — no explicit forwarder
-// teardown is needed here.
+// Remove unregisters and closes the named registry. Idempotent. The
+// registry's [Close] closes its Events channel, which lets any
+// running forwarder exit on its own.
 func (c *Configs) Remove(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -115,18 +106,18 @@ func (c *Configs) Remove(name string) error {
 	return r.Close()
 }
 
-// Close closes every contained registry. Idempotent. Returns a *MultiError
-// collecting every per-registry Close error.
+// Close closes every contained registry. Idempotent. Returns a
+// [*MultiError] aggregating per-registry Close errors.
 //
-// Stops the multiplex engine (if any) BEFORE closing registries so
-// the forwarders observe ctx cancellation and exit cleanly rather
-// than seeing closed source channels mid-forward.
+// The multiplex engine is stopped before registries close so
+// forwarders observe ctx cancellation rather than racing closed
+// source channels.
 func (c *Configs) Close() error {
 	var err error
 	c.closeMu.Do(func() {
-		// Stop the multiplex first — under the lock to coordinate
-		// with concurrent Register calls, then release before Wait
-		// to avoid deadlocking forwarders that need the lock.
+		// Stop the multiplex under lock to coordinate with Register;
+		// release before Wait so forwarders that need the lock can
+		// exit.
 		c.mu.Lock()
 		c.closed = true
 		stop := c.eventStop
@@ -158,8 +149,8 @@ func (c *Configs) Close() error {
 	return err
 }
 
-// NamedEvent is a registry event tagged with its source registry's name.
-// Delivered on the channel returned by [Configs.Events].
+// NamedEvent is a registry [Event] tagged with the source registry's
+// registration name.
 type NamedEvent struct {
 	Event
 
@@ -167,20 +158,13 @@ type NamedEvent struct {
 }
 
 // Events returns a multiplexed channel carrying every contained
-// registry's [Event], tagged with its registration name. The channel
-// is created on the first call and reused on subsequent calls —
-// every Events caller observes the same stream.
+// registry's events, tagged by name. The channel is created on the
+// first call and reused on subsequent calls.
 //
-// Registries added via [Configs.Register] after Events is called are
-// automatically folded into the stream; registries removed via
-// [Configs.Remove] (or closed externally) have their forwarder
-// shut down. Buffer capacity matches each underlying registry's
-// [WithEventBufferSize] sum — a slow consumer triggers per-registry
-// drop warnings on the underlying Events channels, not on the
-// multiplexed channel.
-//
-// The channel is closed when [Configs.Close] runs. Returns nil on a
-// closed Configs.
+// Registries added via [Register] after Events is called are folded
+// in automatically; those removed via [Remove] or closed externally
+// have their forwarder shut down. Closed by [Close]. Returns nil on
+// a closed Configs.
 func (c *Configs) Events() <-chan NamedEvent {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -189,9 +173,6 @@ func (c *Configs) Events() <-chan NamedEvent {
 	}
 	if c.events == nil {
 		c.eventCtx, c.eventStop = context.WithCancel(context.Background())
-		// Buffer sized for the number of currently-registered
-		// registries plus headroom; rebuffered on demand if more
-		// register later.
 		c.events = make(chan NamedEvent, len(c.byName)*4+1)
 		c.forwarders = map[string]struct{}{}
 		for _, name := range c.order {
@@ -201,9 +182,9 @@ func (c *Configs) Events() <-chan NamedEvent {
 	return c.events
 }
 
-// startForwarderLocked spawns a goroutine that forwards every Event
-// from r.Events() onto the multiplexed channel, tagging each entry
-// with name. The caller MUST hold c.mu.
+// startForwarderLocked spawns a goroutine that forwards r.Events()
+// onto the multiplexed channel, tagging each entry with name. Caller
+// must hold c.mu.
 func (c *Configs) startForwarderLocked(name string, r *Registry) {
 	if _, exists := c.forwarders[name]; exists {
 		return
@@ -211,7 +192,6 @@ func (c *Configs) startForwarderLocked(name string, r *Registry) {
 	c.forwarders[name] = struct{}{}
 	src := r.Events()
 	if src == nil {
-		// Registry was already closed; nothing to forward.
 		delete(c.forwarders, name)
 		return
 	}

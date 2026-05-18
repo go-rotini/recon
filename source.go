@@ -2,69 +2,49 @@ package recon
 
 import "context"
 
-// Source is the contract every config-data source implements. The registry
-// composes one or more Sources in precedence order and asks each in turn to
-// look up a key.
-//
-// Sources are constructed with their own configuration (file path, env-var
-// prefix, in-memory map, remote backend, etc.) and registered with a
-// Registry via [WithSource] or [Registry.AddSource]. A Source is consulted
-// only after the registry's own explicit / pinned / aliased layers resolve
-// — see [Registry] for the full resolution order.
+// Source is the contract every config-data source implements. The
+// registry composes one or more Sources in precedence order and asks
+// each in turn to look up a key. A Source is consulted only after the
+// registry's own explicit / pinned / aliased layers resolve.
 type Source interface {
-	// Name identifies the source in [Event] / [Describe] output. Names must
-	// be unique within a single Registry; AddSource returns
-	// [ErrSourceConflict] on collision.
+	// Name identifies the source in [Event] and [Describe] output.
+	// Names must be unique within a Registry.
 	Name() string
 
-	// Get returns the value at path, if present. The returned [Value] preserves
-	// the wire type from the underlying format — the registry performs typed
-	// coercion at the call site, not here.
+	// Get returns the value at path. The returned [Value] preserves
+	// the wire type from the underlying format; typed coercion happens
+	// at the registry call site.
 	//
-	// A returned (Value, false, nil) means "the key is not in this source";
-	// (Value, true, nil) means "set" (an empty-string value is still a present
-	// value); (Value, _, err) reports a source-internal error and propagates
-	// per the configured [ErrorBehavior].
+	// (Value, false, nil) means "not present"; (Value, true, nil)
+	// means "set" (an empty string is a present value);
+	// (Value, _, err) reports a source-internal error.
 	Get(path Path) (Value, bool, error)
 
-	// Keys enumerates every path this source can answer. Used by
-	// [Registry.AllKeys] and [Registry.Describe] for introspection.
-	// The implementation MAY be expensive — the registry calls it
-	// sparingly and caches the result inside snapshots.
-	//
-	// The returned slice MUST NOT be mutated by the caller; sources
-	// are free to alias their internal storage and the registry
-	// treats the result as read-only.
+	// Keys enumerates every path this source can answer. May be
+	// expensive; the registry caches the result inside snapshots. The
+	// returned slice must not be mutated by callers — sources may
+	// alias internal storage.
 	Keys() []Path
 
-	// Close releases any resources held by the source (open files, watcher
-	// subscriptions, network connections). Close is idempotent; calling it
-	// more than once is not an error. Sources that hold no resources may
-	// return nil.
+	// Close releases any resources held by the source. Idempotent;
+	// sources that hold no resources may return nil.
 	Close() error
 }
 
-// Watcher is an optional [Source] capability. Sources that implement Watcher
-// participate in live reload — the registry subscribes once at construction
-// and the engine fans every Watcher's [SourceChange] events into a single
+// Watcher is an optional [Source] capability. Sources implementing
+// Watcher participate in live reload: the registry subscribes once at
+// construction and fans every emitted [SourceChange] into a single
 // reload pipeline.
 //
-// Implementations MUST honor ctx cancellation: when ctx is canceled, Watch
-// closes the returned channel cleanly and returns from any internal
-// goroutine.
+// Implementations must honor ctx cancellation by closing the returned
+// channel and returning from any internal goroutine.
 type Watcher interface {
 	Watch(ctx context.Context) (<-chan SourceChange, error)
 }
 
-// SourceChange is what a [Watcher] emits when a source's content may have
-// changed. Keys lists the paths whose value the source believes have changed;
-// an empty Keys slice signals "I don't know what changed — re-read
-// everything." Err is non-nil when the source itself failed to refresh
-// (e.g., the watched file was deleted and the watcher cannot recover).
-//
-// Callers should treat SourceChange as advisory: the registry re-reads the
-// affected source(s) and computes the actual changed-keys delta against the
-// previous snapshot before emitting an [Event] on the public channel.
+// SourceChange is what a [Watcher] emits when source content may have
+// changed. An empty Keys slice signals "re-read everything"; a non-nil
+// Err signals an unrecoverable refresh failure.
 type SourceChange struct {
 	Keys []Path
 	Err  error

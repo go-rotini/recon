@@ -6,23 +6,16 @@ import (
 	"reflect"
 )
 
-// Bind populates target from the registry's current snapshot. target
-// MUST be a non-nil pointer to a struct; the walker recurses
-// through the struct, parsing each field's tag, resolving the path
-// against [Registry.Get], coercing the value into the field's Go
-// type, and assigning. Errors aggregate into a [*MultiError] under
-// FailCollect (the default) and short-circuit on the first failure
-// under FailFast.
-//
-// Tag grammar and the `recon` → `env` → `json` → `yaml` → `toml`
-// fallback chain are documented on [TagName] and [FieldTag].
+// Bind populates target from the current snapshot. target must be a
+// non-nil pointer to a struct. Errors aggregate into a [*MultiError]
+// under [FailCollect] (the default) or short-circuit on the first
+// under [FailFast]. Tag grammar lives on [FieldTag].
 func (r *Registry) Bind(target any, opts ...DecodeOption) error {
 	return r.BindContext(context.Background(), target, opts...)
 }
 
-// BindContext is the context-aware variant of [Registry.Bind]. The
-// context is threaded into any [UnmarshalerContext] / [ValidatorContext]
-// hooks the bind target may implement.
+// BindContext is the context-aware [Bind]. ctx is threaded into any
+// [ValidatorContext] hook the target implements.
 func (r *Registry) BindContext(ctx context.Context, target any, opts ...DecodeOption) error {
 	if err := r.validateNotClosed(); err != nil {
 		return err
@@ -47,15 +40,10 @@ func (r *Registry) BindContext(ctx context.Context, target any, opts ...DecodeOp
 		consulted: map[string]struct{}{},
 	}
 	w.walk(rv, r.prefix)
-
-	// Optional whole-target validation: a target implementing
-	// Validator / ValidatorContext gets a final pass after every field
-	// has been populated.
 	w.runValidatorHooks(ctx, target)
 
 	// Strict mode: every snapshot key the struct didn't consult is
-	// reported as a *UnknownKeyError. Scoped to the registry's prefix
-	// so a Sub(...).Bind only complains about its own sub-tree.
+	// reported as a *UnknownKeyError, scoped to the registry's prefix.
 	if cfg.strict != nil && *cfg.strict {
 		w.emitUnknownKeyErrors()
 	}
@@ -69,20 +57,15 @@ func (r *Registry) BindContext(ctx context.Context, target any, opts ...DecodeOp
 	return w.errs
 }
 
-// Unmarshal is an alias for [Registry.Bind]. The name matches the
-// stdlib encoding-package convention (Marshal / Unmarshal) so the
-// verb is interchangeable with other decoder APIs callers may
-// already be using.
+// Unmarshal is an alias for [Registry.Bind], named to mirror the
+// stdlib encoding/Marshal-Unmarshal convention.
 func (r *Registry) Unmarshal(target any, opts ...DecodeOption) error {
 	return r.Bind(target, opts...)
 }
 
-// UnmarshalKey binds the registry's sub-tree rooted at key into
-// target. Equivalent to `r.Sub(key).Bind(target, opts...)` but spelled
-// at the registry level for callers who want a one-line "bind just
-// this prefix" entry point.
-//
-// Empty key is equivalent to [Registry.Bind] on the root registry.
+// UnmarshalKey binds the registry's sub-tree at key into target —
+// equivalent to r.Sub(key).Bind(target, opts...). An empty key is
+// equivalent to [Bind].
 func (r *Registry) UnmarshalKey(key string, target any, opts ...DecodeOption) error {
 	if key == "" {
 		return r.Bind(target, opts...)
@@ -90,9 +73,8 @@ func (r *Registry) UnmarshalKey(key string, target any, opts ...DecodeOption) er
 	return r.Sub(key).Bind(target, opts...)
 }
 
-// buildDecodeOptions merges call-time DecodeOptions with the registry's
-// configured defaults. Registry-level settings (strict, errorBehavior)
-// supply the baseline; per-call options override.
+// buildDecodeOptions merges call-time options with the registry's
+// configured defaults. Per-call values override.
 func (r *Registry) buildDecodeOptions(ctx context.Context, opts []DecodeOption) decodeOptions {
 	cfg := decodeOptions{
 		tagName: TagName,
@@ -107,7 +89,6 @@ func (r *Registry) buildDecodeOptions(ctx context.Context, opts []DecodeOption) 
 	if cfg.ctx == nil {
 		cfg.ctx = ctx
 	}
-	// Bridge registry-level defaults that the per-call cfg did not set.
 	if cfg.strict == nil {
 		s := r.state.opts.strict
 		cfg.strict = &s
@@ -119,11 +100,9 @@ func (r *Registry) buildDecodeOptions(ctx context.Context, opts []DecodeOption) 
 	return cfg
 }
 
-// Unmarshaler is the optional decode-side hook a bind-target field may
-// implement to take over its own decoding. coerce dispatches to
-// Unmarshaler first, then to UnmarshalEnv (env.Secret-style), then to
-// UnmarshalText (encoding.TextUnmarshaler) — the first hook a target
-// implements wins.
+// Unmarshaler is the optional decode hook a bind-target field may
+// implement to take over its own decoding. coerce tries [Unmarshaler]
+// first, then UnmarshalEnv, then encoding.TextUnmarshaler.
 type Unmarshaler interface {
 	UnmarshalRecon(v Value) error
 }

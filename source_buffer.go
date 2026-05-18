@@ -1,18 +1,11 @@
 package recon
 
-import (
-	"fmt"
-)
+import "fmt"
 
-// BufferSource is a [Source] backed by bytes plus a [Codec]. The
-// bytes are decoded once at construction; subsequent Get / Keys
-// calls read from the decoded map. Intended for tests, library
-// callers with bytes already in hand, and the "stdin was piped as
-// YAML" / "this string holds the config blob" patterns.
-//
-// BufferSource is a thin wrapper over [MapSource] — once the bytes
-// are decoded, the behavior is identical. The construction-time
-// decode is what distinguishes BufferSource from [NewMapSource].
+// BufferSource is a [Source] backed by bytes plus a [Codec]. The bytes
+// are decoded once at construction; subsequent Get / Keys calls read
+// from the decoded map. Useful for tests, in-process bytes, and the
+// "stdin was piped as YAML" pattern.
 type BufferSource struct {
 	*MapSource
 
@@ -20,17 +13,14 @@ type BufferSource struct {
 	codec  Codec
 }
 
-// NewBufferSource decodes data using the supplied codec (via the
-// [WithBufferCodec] option) and returns a Source named name. The
-// format string is recorded for diagnostic output but does not
-// drive decoding — the codec is authoritative.
+// NewBufferSource decodes data with the codec supplied via
+// [WithBufferCodec] and returns a Source named name. The format string
+// is recorded for diagnostics but does not drive decoding.
 //
-// Returns [ErrUnsupportedFormat] when no codec is supplied via
-// [WithBufferCodec]. Source construction does not consult the
-// registry's codec set (the registry isn't known here), so callers
-// MUST pass the codec explicitly — or use a format-named
-// convenience constructor ([NewYAMLSource], etc.) when the bytes are
-// in a file.
+// Returns wrapped [ErrUnsupportedFormat] when no codec is supplied.
+// Source construction has no access to the registry's codec set, so
+// callers must pass the codec explicitly or use a format-named
+// constructor ([NewYAMLSource], etc.) for files.
 func NewBufferSource(name, format string, data []byte, opts ...BufferOption) (Source, error) {
 	cfg := bufferOptions{}
 	for _, opt := range opts {
@@ -52,12 +42,8 @@ func NewBufferSource(name, format string, data []byte, opts ...BufferOption) (So
 	}, nil
 }
 
-// Format reports the format hint passed at construction. Useful in
-// diagnostic output ("source X (yaml) returned an empty Keys() set") but
-// does not affect behavior.
+// Format returns the format hint passed at construction.
 func (s *BufferSource) Format() string { return s.format }
 
-// Codec returns the codec used to decode this source's bytes. Stored so a
-// future Save / Encode operation through this source can round-trip via
-// the same codec.
+// Codec returns the codec used to decode this source's bytes.
 func (s *BufferSource) Codec() Codec { return s.codec }

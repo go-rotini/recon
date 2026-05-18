@@ -6,23 +6,19 @@ import (
 	"github.com/go-rotini/jsonc"
 )
 
-// jsoncCodec wraps go-rotini/jsonc — JSON with comments and trailing
-// commas. The codec advertises both ".jsonc" and ".json5" because the
-// sibling parser accepts JSON5's relaxed grammar; ".json5" callers get
-// the same behavior they'd expect from a dedicated JSON5 codec.
+// jsoncCodec wraps go-rotini/jsonc (JSON with comments and trailing
+// commas). The codec also advertises ".json5" because the sibling
+// parser accepts JSON5's relaxed grammar.
 type jsoncCodec struct{}
 
-// JSONC is the package-level [Codec] for JSONC / JSON5 documents.
-// Registered by [New] in the default codec set.
+// JSONC is the [Codec] for JSONC / JSON5 documents. Registered in
+// the default codec set by [New].
 var JSONC Codec = jsoncCodec{}
 
 func (jsoncCodec) Name() string         { return FormatJSONC }
 func (jsoncCodec) Extensions() []string { return []string{".jsonc", ".json5"} }
 
-// Decode parses data as a JSONC document into a map[string]any. Comments
-// and trailing commas are stripped by the underlying parser before the
-// JSON grammar is applied; the result has the same shape constraints as
-// the [JSON] codec (object root required).
+// Decode parses data as a JSONC document. An object root is required.
 func (jsoncCodec) Decode(data []byte) (map[string]any, error) {
 	if len(data) == 0 {
 		return map[string]any{}, nil
@@ -39,9 +35,8 @@ func (jsoncCodec) Decode(data []byte) (map[string]any, error) {
 	return m, nil
 }
 
-// Encode serializes v as a JSONC document. The output is structurally
-// JSON (no comments) — JSONC's grammar is only meaningful on the input
-// side; recon never invents comments on encode.
+// Encode serializes v as JSON; JSONC comments are an input-only
+// concern.
 func (jsoncCodec) Encode(v map[string]any) ([]byte, error) {
 	b, err := jsonc.Marshal(v)
 	if err != nil {

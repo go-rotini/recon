@@ -7,22 +7,15 @@ import (
 )
 
 // JSONSchemaValidator is the bundled [SchemaValidator] backed by
-// go-rotini/jsonschema. Compile the schema once at construction;
-// validation against snapshots is then cheap and lock-free.
-//
-// The validator accepts any input go-rotini/jsonschema does: raw JSON
-// bytes via [NewJSONSchemaValidator], YAML/TOML/JSONC via
-// [NewJSONSchemaValidatorYAML] / [NewJSONSchemaValidatorTOML] /
-// [NewJSONSchemaValidatorJSONC], or a pre-compiled *jsonschema.Schema
-// via [NewJSONSchemaValidatorFromSchema] for callers that want
-// fine-grained control over compile options.
+// go-rotini/jsonschema. The schema is compiled once at construction;
+// per-snapshot validation is then cheap and lock-free.
 type JSONSchemaValidator struct {
 	schema *jsonschema.Schema
 }
 
 // NewJSONSchemaValidator compiles schemaJSON and returns a validator
-// ready to plug into [WithValidator]. Returns an error wrapping
-// [ErrSchemaInvalid] when the schema fails to compile.
+// for [WithValidator]. Returns a wrapped [ErrSchemaInvalid] on
+// compile failure.
 func NewJSONSchemaValidator(schemaJSON []byte) (*JSONSchemaValidator, error) {
 	s, err := jsonschema.Compile(schemaJSON)
 	if err != nil {
@@ -31,9 +24,7 @@ func NewJSONSchemaValidator(schemaJSON []byte) (*JSONSchemaValidator, error) {
 	return &JSONSchemaValidator{schema: s}, nil
 }
 
-// NewJSONSchemaValidatorYAML compiles a YAML-encoded schema. The schema
-// itself is parsed from YAML; the snapshot is still validated as a Go
-// value (no YAML round-trip per Validate call).
+// NewJSONSchemaValidatorYAML compiles a YAML-encoded schema.
 func NewJSONSchemaValidatorYAML(schemaYAML []byte) (*JSONSchemaValidator, error) {
 	s, err := jsonschema.LoadYAML(schemaYAML)
 	if err != nil {
@@ -42,8 +33,7 @@ func NewJSONSchemaValidatorYAML(schemaYAML []byte) (*JSONSchemaValidator, error)
 	return &JSONSchemaValidator{schema: s}, nil
 }
 
-// NewJSONSchemaValidatorTOML is the TOML-encoded counterpart of
-// [NewJSONSchemaValidatorYAML].
+// NewJSONSchemaValidatorTOML compiles a TOML-encoded schema.
 func NewJSONSchemaValidatorTOML(schemaTOML []byte) (*JSONSchemaValidator, error) {
 	s, err := jsonschema.LoadTOML(schemaTOML)
 	if err != nil {
@@ -52,9 +42,7 @@ func NewJSONSchemaValidatorTOML(schemaTOML []byte) (*JSONSchemaValidator, error)
 	return &JSONSchemaValidator{schema: s}, nil
 }
 
-// NewJSONSchemaValidatorJSONC is the JSONC-encoded counterpart of
-// [NewJSONSchemaValidatorYAML]. Useful when shipping a heavily-commented
-// schema next to the codebase.
+// NewJSONSchemaValidatorJSONC compiles a JSONC-encoded schema.
 func NewJSONSchemaValidatorJSONC(schemaJSONC []byte) (*JSONSchemaValidator, error) {
 	s, err := jsonschema.LoadJSONC(schemaJSONC)
 	if err != nil {
@@ -64,21 +52,16 @@ func NewJSONSchemaValidatorJSONC(schemaJSONC []byte) (*JSONSchemaValidator, erro
 }
 
 // NewJSONSchemaValidatorFromSchema wraps an already-compiled
-// *jsonschema.Schema. Use when the caller has assembled the schema with
-// custom CompileOptions (remote $ref loaders, draft pinning) and wants
-// to share it across validators.
+// jsonschema.Schema. Use when the caller assembled the schema with
+// custom CompileOptions (remote $ref loaders, draft pinning).
 func NewJSONSchemaValidatorFromSchema(s *jsonschema.Schema) *JSONSchemaValidator {
 	return &JSONSchemaValidator{schema: s}
 }
 
-// Validate implements [SchemaValidator]. It runs the supplied snapshot
-// through the compiled schema; on failure every constraint violation is
-// translated into a recon [*ValidationError] and aggregated under a
-// [*MultiError] so the caller sees the full list rather than just the
-// first failure.
-//
-// A nil snapshot is treated as the empty object — same handling as
-// [Snapshot.AsMap] on an empty registry.
+// Validate runs snapshot through the compiled schema. On failure,
+// each constraint violation is translated into a [*ValidationError]
+// and aggregated under a [*MultiError]. A nil snapshot is treated as
+// the empty object.
 func (v *JSONSchemaValidator) Validate(snapshot map[string]any) error {
 	if v == nil || v.schema == nil {
 		return nil
@@ -101,15 +84,10 @@ func (v *JSONSchemaValidator) Validate(snapshot map[string]any) error {
 	return multi
 }
 
-// translateSchemaError converts one jsonschema.ValidationError into a
-// recon *ValidationError. The instance pointer ("/server/port") is
-// rewritten into a [Path] (server.port); the schema keyword
-// ("minimum") becomes the Rule field.
-//
-// Compound applicators (anyOf, $ref, oneOf) carry their nested
-// causes on jsonschema.ValidationError.Causes; recon currently
-// flattens just the top-level error per failed assertion.
-// Structured presentation of the cause tree is a future extension.
+// translateSchemaError converts a jsonschema.ValidationError into a
+// recon [*ValidationError]. Compound applicators (anyOf, $ref, oneOf)
+// carry nested causes on .Causes; only the top-level assertion is
+// surfaced today.
 func translateSchemaError(e *jsonschema.ValidationError) *ValidationError {
 	return &ValidationError{
 		Path: jsonPointerToPath(e.InstanceLocation),
@@ -119,9 +97,7 @@ func translateSchemaError(e *jsonschema.ValidationError) *ValidationError {
 }
 
 // jsonPointerToPath rewrites a JSON Pointer ("/server/port") into a
-// recon [Path] (`Path{"server", "port"}`). Tilde escapes (~0, ~1) are
-// reversed per RFC 6901. An empty pointer (the document root) returns
-// an empty Path.
+// recon [Path]. RFC 6901 tilde escapes (~0, ~1) are reversed.
 func jsonPointerToPath(pointer string) Path {
 	if pointer == "" || pointer == "/" {
 		return Path{}
@@ -136,9 +112,6 @@ func jsonPointerToPath(pointer string) Path {
 	return Path(segments)
 }
 
-// splitJSONPointer splits the pointer on '/'. Implemented inline rather
-// than calling strings.Split so the caller's intent stays visible in
-// the function name.
 func splitJSONPointer(s string) []string {
 	out := []string{}
 	start := 0
@@ -151,12 +124,12 @@ func splitJSONPointer(s string) []string {
 	return append(out, s[start:])
 }
 
-// unescapeJSONPointer reverses RFC 6901's tilde escapes: ~1 → /, ~0 → ~.
+// unescapeJSONPointer reverses ~1 → / and ~0 → ~ from RFC 6901.
 func unescapeJSONPointer(s string) string {
 	if s == "" {
 		return s
 	}
-	// Two-pass to keep the common (no-escape) path allocation-free.
+	// Fast path: no tildes, return the string unchanged.
 	hasTilde := false
 	for i := range len(s) {
 		if s[i] == '~' {

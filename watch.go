@@ -10,21 +10,10 @@ import (
 	"time"
 )
 
-// watchEngine fans in every [Watcher]-implementing source, debounces
-// the resulting [SourceChange] events, rebuilds the registry snapshot,
-// and emits the resulting [Event] on the public channel returned by
-// [Registry.Events].
-//
-// Lifecycle:
-//   - Started once at construction (via [Registry.New]). Goroutines:
-//     one per subscribed source (forwarders) plus one debounce loop.
-//   - Stopped on [Registry.Close]. The lifecycle context cancels every
-//     forwarder; the debounce loop drains any in-flight pending event,
-//     closes the public Events channel, and exits.
-//
-// The engine is intentionally inert when no source implements Watcher —
-// the only running goroutine is the debounce loop, which blocks on its
-// idle select until ctx cancellation.
+// watchEngine fans in [Watcher]-implementing sources, debounces their
+// [SourceChange] events, rebuilds the snapshot, and emits the result on
+// the channel returned by [Registry.Events]. Started by [Registry.New]
+// and stopped by [Registry.Close].
 type watchEngine struct {
 	r       *Registry
 	ctx     context.Context
@@ -32,24 +21,18 @@ type watchEngine struct {
 	pending chan pendingChange
 	events  chan Event
 	wg      sync.WaitGroup
-	// dropped counts Events the public channel could not absorb because
-	// it was full. The count is surfaced on the next deliverable event
-	// as a [DeprecationWarning]-shaped notice so consumers see the
-	// pressure without losing the actual reload signal.
+	// dropped counts Events the public channel could not absorb. The
+	// count is surfaced on the next deliverable event as a warning.
 	dropped atomic.Int64
 }
 
-// pendingChange is the internal envelope around a single source's
-// [SourceChange]. The source name is stashed so the engine can attribute
-// the outbound [Event] to its origin.
 type pendingChange struct {
 	src    string
 	change SourceChange
 }
 
-// newWatchEngine constructs (but does not start) a watch engine
-// attached to r. The caller MUST hold r.state.mu — the engine reads
-// the source list once at construction.
+// newWatchEngine constructs (but does not start) an engine attached to
+// r. The caller must hold r.state.mu.
 func newWatchEngine(r *Registry) *watchEngine {
 	bufSize := r.state.opts.eventBufSize
 	if bufSize <= 0 {
@@ -66,13 +49,9 @@ func newWatchEngine(r *Registry) *watchEngine {
 }
 
 // start subscribes to every [Watcher]-implementing source, kicks off
-// the optional poll ticker for non-Watcher sources (when
-// [WithPoll] is set), and starts the debounce loop. Subscription
-// failures are logged but do not abort startup — the registry stays
-// usable for non-watch use even when a single source's watcher
-// cannot subscribe.
-//
-// The caller MUST hold r.state.mu.
+// the optional poll ticker, and starts the debounce loop. Subscription
+// failures are logged but do not abort startup. Caller must hold
+// r.state.mu.
 func (e *watchEngine) start() {
 	hasNonWatcher := false
 	for _, src := range e.r.state.sources {
@@ -98,16 +77,9 @@ func (e *watchEngine) start() {
 	go e.loop()
 }
 
-// poll fires a synthetic SourceChange on the engine's pending
-// channel every interval. Used when [WithPoll] is configured AND at
-// least one registered source does not implement [Watcher] —
-// typically [OSEnvSource], whose underlying os.LookupEnv has no
-// notification channel.
-//
-// Source refreshes happen at the source layer; the engine's role is
-// to drive the rebuild on a cadence. Sources with an internal cache
-// (like [OSEnvSource]) get a [OSEnvSource.Refresh] call here so
-// their cached keyset matches the new env state.
+// poll fires a synthetic pending change every interval to drive
+// reloads for non-[Watcher] sources (e.g. [OSEnvSource]). Sources
+// exposing Refresh have it called first so their cached state matches.
 func (e *watchEngine) poll(interval time.Duration) {
 	defer e.wg.Done()
 	ticker := time.NewTicker(interval)
@@ -127,11 +99,9 @@ func (e *watchEngine) poll(interval time.Duration) {
 	}
 }
 
-// refreshNonWatcherSources walks the registry's source chain and
-// calls Refresh on any source that exposes it. The Refresh method
-// is intentionally not part of the [Source] interface — sources
-// that benefit from it (env-style polling) expose it as an
-// optional capability the engine consults via type assertion.
+// refreshNonWatcherSources calls Refresh on any non-[Watcher] source
+// that exposes it. Refresh is an optional capability discovered by type
+// assertion rather than a method on [Source].
 func (e *watchEngine) refreshNonWatcherSources() {
 	e.r.state.mu.Lock()
 	sources := append([]Source(nil), e.r.state.sources...)
@@ -147,8 +117,7 @@ func (e *watchEngine) refreshNonWatcherSources() {
 }
 
 // forward shuttles SourceChange events from one source's subscription
-// into the engine's pending channel. Exits when ctx cancels or the
-// subscription closes.
+// into the engine's pending channel.
 func (e *watchEngine) forward(srcName string, sub <-chan SourceChange) {
 	defer e.wg.Done()
 	for {
@@ -168,14 +137,8 @@ func (e *watchEngine) forward(srcName string, sub <-chan SourceChange) {
 	}
 }
 
-// loop runs the debounce-and-reload state machine. On every pending
-// change it (re)sets a debounce timer; when the timer expires, the
-// snapshot is rebuilt, the Changed delta is computed against the
-// previous snapshot, and an Event is emitted on the public channel.
-//
-// The implementation goes to some length to keep the timer in a
-// well-defined state across rapid pending bursts: Stop+drain+Reset is
-// the canonical pattern from the standard library.
+// loop debounces pending changes and fires one reload per quiescent
+// window.
 func (e *watchEngine) loop() {
 	defer e.wg.Done()
 	defer close(e.events)
@@ -185,9 +148,6 @@ func (e *watchEngine) loop() {
 		debounce = 50 * time.Millisecond
 	}
 
-	// armed timer; initially stopped (no pending). drained tracks
-	// whether the timer's channel has been consumed since the last
-	// Stop call — used by the canonical Stop+drain+Reset dance.
 	timer := time.NewTimer(time.Hour)
 	if !timer.Stop() {
 		<-timer.C
@@ -209,8 +169,10 @@ func (e *watchEngine) loop() {
 				})
 				continue
 			}
+			// Canonical Stop+drain+Reset: when Stop reports the timer
+			// already fired, drain its channel before Reset so the
+			// next firing doesn't see a stale tick.
 			if armed && !timer.Stop() {
-				// Timer already fired but hasn't been read — drain.
 				select {
 				case <-timer.C:
 				default:
@@ -226,17 +188,9 @@ func (e *watchEngine) loop() {
 	}
 }
 
-// fireReload runs one full reload cycle: rebuild the candidate
-// snapshot, run the immutable + validator checks, and emit. When the
-// checks pass, the candidate is atomic-installed and Event.Changed
-// reflects the diff against the previous snapshot. When the checks
-// fail, the previous snapshot is retained — readers continue to
-// observe the last-known-good resolved view — and the Event carries
-// Err with an empty Changed slice.
-//
-// This is the "previous-snapshot-retained on validator failure"
-// contract: a bad reload never makes the registry serve unvalidated
-// state.
+// fireReload rebuilds the snapshot and emits one [Event]. On rebuild
+// failure the previous snapshot is retained and the event carries Err
+// with an empty Changed.
 func (e *watchEngine) fireReload(src string) {
 	prev := e.r.state.snapshot.Load()
 
@@ -262,14 +216,10 @@ func (e *watchEngine) fireReload(src string) {
 	e.emit(evt)
 }
 
-// emit sends evt on the public channel. When the channel is full, the
-// event is dropped and the dropped counter is incremented; the loss is
-// surfaced on the next deliverable event as a warning so consumers see
-// the back-pressure without missing every signal.
-//
-// The dropped-count reset is intentionally tied to successful
-// delivery: a swap-then-emit would lose the warning when the emit
-// itself dropped, defeating the whole point of the counter.
+// emit sends evt on the public channel, prepending a warning about any
+// previously-dropped events. The dropped-count reset is tied to a
+// successful send so the warning isn't itself lost when the channel
+// stays full.
 func (e *watchEngine) emit(evt Event) {
 	if dropped := e.dropped.Load(); dropped > 0 {
 		noun := "events were"
@@ -284,8 +234,6 @@ func (e *watchEngine) emit(evt Event) {
 		})
 		select {
 		case e.events <- evt:
-			// Decrement by the count we just reported; any drops that
-			// accumulated during the build/emit window survive.
 			e.dropped.Add(-dropped)
 			return
 		default:
@@ -304,25 +252,17 @@ func (e *watchEngine) emit(evt Event) {
 	}
 }
 
-// stop cancels the engine's context, waits for every goroutine to
-// finish, and ensures the public Events channel is closed. Safe to
-// call from [Registry.Close].
+// stop cancels the engine's context and waits for every goroutine to
+// finish. The public Events channel is closed by the debounce loop on
+// its way out.
 func (e *watchEngine) stop() {
 	e.cancel()
 	e.wg.Wait()
 }
 
-// diffSnapshots returns the paths whose resolved value differs between
-// prev and cur. Used by the engine to populate [Event.Changed].
-//
-// The diff covers three cases per path:
-//
-//   - present in cur, absent in prev → added (Changed).
-//   - present in prev, absent in cur → removed (Changed).
-//   - present in both with different Value.Any() → modified (Changed).
-//
-// Identity-equal values (same provenance, same payload) are NOT
-// reported. The return is sorted by canonical path string.
+// diffSnapshots returns the sorted paths whose resolved value differs
+// between prev and cur (added, removed, or modified). Identity-equal
+// values are not reported.
 func diffSnapshots(prev, cur *Snapshot) []Path {
 	if prev == nil && cur == nil {
 		return nil
@@ -351,9 +291,8 @@ func diffSnapshots(prev, cur *Snapshot) []Path {
 	return paths
 }
 
-// snapshotKeyValues extracts the canonical path→Value map from s.
-// Returns an empty map (not nil) when s is nil so the per-key diff
-// loop can iterate without a guard.
+// snapshotKeyValues returns the canonical path→Value map for s, or an
+// empty map when s is nil so callers can iterate unconditionally.
 func snapshotKeyValues(s *Snapshot) map[string]Value {
 	if s == nil {
 		return map[string]Value{}
@@ -369,10 +308,9 @@ func snapshotKeyValues(s *Snapshot) map[string]Value {
 	return out
 }
 
-// valuesEqual reports whether a and b represent the same resolved
-// configuration value. Provenance differences (Source field) do not
-// count — only the payload matters; reflect.DeepEqual on Any() is
-// authoritative because [Value]'s constructor canonicalizes types.
+// valuesEqual reports whether a and b carry the same payload, ignoring
+// provenance. [Value]'s constructor canonicalizes types so
+// reflect.DeepEqual on Any() is sufficient.
 func valuesEqual(a, b Value) bool {
 	if a.Kind() != b.Kind() {
 		return false

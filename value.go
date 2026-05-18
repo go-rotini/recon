@@ -7,24 +7,21 @@ import (
 	"time"
 )
 
-// ValueKind identifies the wire-form type of a [Value]. The registry preserves
-// the wire type from a [Source] all the way through to coercion time, so that
-// callers can ask for typed values via [Get] / [Bind] without losing
-// information.
+// ValueKind identifies the wire-form type of a [Value]. The registry
+// preserves the wire type from [Source] through coercion so callers can
+// request typed values without losing information.
 type ValueKind int
 
-// ValueKind constants. The ordering is stable but not API-visible — callers
-// should compare against the named constants.
+// ValueKind constants.
 const (
-	// NullKind is the absence of a value. A source returning ok=true with a
-	// NullKind value represents "the key is set, but to nil/null" (e.g., a
-	// YAML key with an explicit null value).
+	// NullKind is the absence of a value. A source returning ok=true
+	// with NullKind represents "key is set, but to null".
 	NullKind ValueKind = iota
 	// StringKind is a UTF-8 string.
 	StringKind
-	// IntKind is a signed integer; canonical storage is int64.
+	// IntKind is a signed integer, stored as int64.
 	IntKind
-	// FloatKind is a floating-point number; canonical storage is float64.
+	// FloatKind is a floating-point number, stored as float64.
 	FloatKind
 	// BoolKind is a boolean.
 	BoolKind
@@ -34,16 +31,14 @@ const (
 	DurationKind
 	// SliceKind is an ordered list of Values.
 	SliceKind
-	// MapKind is a map from string keys to Values.
+	// MapKind is a map from string to Value.
 	MapKind
-	// RawKind is bytes plus a format hint — used when a source defers parsing
-	// (e.g., a config field that holds a JSON-encoded blob to be decoded on
-	// demand).
+	// RawKind is bytes plus a format hint, used when a source defers
+	// parsing.
 	RawKind
 )
 
-// String returns the lowercase, dash-free name of the kind ("string", "int", …).
-// Useful in error messages.
+// String returns the lowercase name of the kind.
 func (k ValueKind) String() string {
 	switch k {
 	case NullKind:
@@ -71,25 +66,18 @@ func (k ValueKind) String() string {
 	}
 }
 
-// Value is a typed, source-tagged scalar / container the registry hands back
-// from a [Source] lookup. It preserves the original wire type so coercion can
-// be performed at the call site without ambiguity.
-//
-// Value is immutable from the caller's perspective: the constructors return a
-// fresh Value, and the As* methods do not mutate. Internally the registry may
-// fill in the Source field after construction; once handed to a caller, the
-// Value should be treated as read-only.
+// Value is a typed, source-tagged datum returned by a [Source] lookup.
+// Constructors return fresh Values and the As* methods do not mutate;
+// once handed to a caller, a Value should be treated as read-only.
 type Value struct {
 	kind   ValueKind
 	raw    any
 	source string
 }
 
-// NewValue wraps a Go value in a Value, inferring the ValueKind from v's
-// dynamic type. nil → NullKind; string → StringKind; integer types → IntKind
-// (canonicalised to int64); floating types → FloatKind; bool → BoolKind;
-// time.Time → TimeKind; time.Duration → DurationKind; []any → SliceKind;
-// map[string]any → MapKind; otherwise StringKind via fmt.Sprint.
+// NewValue wraps a Go value, inferring the [ValueKind] from its dynamic
+// type. Integer types canonicalize to int64; float32 widens to float64.
+// Unrecognized types fall through to StringKind via fmt.Sprint.
 func NewValue(v any) Value {
 	switch x := v.(type) {
 	case nil:
@@ -111,7 +99,6 @@ func NewValue(v any) Value {
 		}
 		return Value{kind: SliceKind, raw: out}
 	case []Value:
-		// Copy to avoid aliasing the caller's slice.
 		out := make([]Value, len(x))
 		copy(out, x)
 		return Value{kind: SliceKind, raw: out}
@@ -132,9 +119,8 @@ func NewValue(v any) Value {
 	return Value{kind: StringKind, raw: fmt.Sprint(v)}
 }
 
-// numericValue handles the integer / unsigned-integer / floating-point arms
-// of [NewValue]. Extracted so NewValue stays under the cyclop ceiling.
-// Returns ok=false when v is not a numeric type recon recognizes.
+// numericValue handles the integer / float arms of [NewValue].
+// Extracted so NewValue stays under the cyclop ceiling.
 func numericValue(v any) (Value, bool) {
 	switch x := v.(type) {
 	case int:
@@ -165,18 +151,14 @@ func numericValue(v any) (Value, bool) {
 	return Value{}, false
 }
 
-// NewRawValue wraps undecoded bytes plus a format hint in a Value. Useful when
-// a config field holds a sub-document in a different format (e.g., a JSON-
-// encoded blob stored inside a YAML key).
+// NewRawValue wraps undecoded bytes plus a format hint in a Value.
 func NewRawValue(format string, data []byte) Value {
 	cp := make([]byte, len(data))
 	copy(cp, data)
 	return Value{kind: RawKind, raw: RawValue{Format: format, Data: cp}}
 }
 
-// withSource returns a copy of v tagged with the given source name. Used
-// internally by the registry to fill provenance after a source returns its
-// raw value; exercised by TestValue_Source in this package.
+// withSource returns a copy of v tagged with the given source name.
 func (v Value) withSource(name string) Value {
 	v.source = name
 	return v
@@ -185,20 +167,17 @@ func (v Value) withSource(name string) Value {
 // Kind reports the wire-form type of v.
 func (v Value) Kind() ValueKind { return v.kind }
 
-// Source returns the name of the [Source] that produced v, if known. Empty
-// when v was constructed directly via [NewValue] or [NewRawValue] and has not
-// yet been adopted by a registry.
+// Source returns the name of the [Source] that produced v, or "" when v
+// was constructed directly and not yet adopted by a registry.
 func (v Value) Source() string { return v.source }
 
-// IsZero reports whether v carries no underlying datum. A NullKind Value is
-// zero; every other kind is non-zero (an empty string, empty slice, or empty
-// map is still a present value).
+// IsZero reports whether v carries no underlying datum. A [NullKind]
+// Value is zero; an empty string, slice, or map is not.
 func (v Value) IsZero() bool { return v.kind == NullKind }
 
-// Any returns the underlying Go value as-is. The concrete type follows the
-// kind: string, int64, float64, bool, time.Time, time.Duration, []Value,
-// map[string]Value, RawValue, or nil. Callers typically prefer the typed As*
-// accessors.
+// Any returns the underlying Go value. The concrete type follows the
+// kind: string, int64, float64, bool, time.Time, time.Duration,
+// []Value, map[string]Value, [RawValue], or nil.
 func (v Value) Any() any {
 	if v.kind == NullKind {
 		return nil
@@ -206,14 +185,10 @@ func (v Value) Any() any {
 	return v.raw
 }
 
-// unwrapValueDeep converts a [Value] into the plain-Go shape codecs
-// and JSON encoders expect: scalars become their underlying type,
-// [SliceKind] becomes []any (recursively unwrapped), [MapKind]
-// becomes map[string]any (recursively unwrapped). The function
-// exists because [Value.Any] returns map[string]Value / []Value for
-// compound kinds — useful for further chain-of-Value processing
-// but unfit for direct serialization through encoding/json or the
-// bundled codecs.
+// unwrapValueDeep converts v into the plain-Go shape codecs expect:
+// scalars unchanged, [SliceKind] → []any, [MapKind] → map[string]any,
+// recursively. Used by save/encode paths where [Value.Any]'s
+// map[string]Value / []Value would not round-trip.
 func unwrapValueDeep(v Value) any {
 	switch v.Kind() {
 	case SliceKind:
@@ -241,10 +216,9 @@ func unwrapValueDeep(v Value) any {
 	}
 }
 
-// String returns the canonical string representation of v for printing.
-// Strings are returned verbatim; other kinds use fmt.Sprint on the underlying
-// value. Use AsString for the strict typed accessor that errors on a
-// mismatch.
+// String returns the canonical string representation of v. Strings are
+// returned verbatim; other kinds use fmt.Sprint on the raw value. Use
+// [Value.AsString] for the strict accessor.
 func (v Value) String() string {
 	switch v.kind {
 	case NullKind:
@@ -257,7 +231,7 @@ func (v Value) String() string {
 	}
 }
 
-// AsString returns the string value if v is StringKind, else an error.
+// AsString returns the string value if v is [StringKind].
 func (v Value) AsString() (string, error) {
 	if v.kind != StringKind {
 		return "", typeMismatchErr(v.kind, "string")
@@ -266,7 +240,7 @@ func (v Value) AsString() (string, error) {
 	return s, nil
 }
 
-// AsInt64 returns the integer value if v is IntKind, else an error.
+// AsInt64 returns the int64 value if v is [IntKind].
 func (v Value) AsInt64() (int64, error) {
 	if v.kind != IntKind {
 		return 0, typeMismatchErr(v.kind, "int64")
@@ -275,8 +249,8 @@ func (v Value) AsInt64() (int64, error) {
 	return i, nil
 }
 
-// AsFloat64 returns the float value if v is FloatKind, else an error.
-// IntKind values are widened lossless-ly to float64 as a convenience.
+// AsFloat64 returns the float64 value if v is [FloatKind]. [IntKind]
+// values are widened losslessly as a convenience.
 func (v Value) AsFloat64() (float64, error) {
 	switch v.kind {
 	case FloatKind:
@@ -290,7 +264,7 @@ func (v Value) AsFloat64() (float64, error) {
 	}
 }
 
-// AsBool returns the boolean value if v is BoolKind, else an error.
+// AsBool returns the bool value if v is [BoolKind].
 func (v Value) AsBool() (bool, error) {
 	if v.kind != BoolKind {
 		return false, typeMismatchErr(v.kind, "bool")
@@ -299,8 +273,8 @@ func (v Value) AsBool() (bool, error) {
 	return b, nil
 }
 
-// AsTime returns the time value if v is TimeKind. StringKind values are
-// parsed as RFC 3339 as a convenience; other kinds error.
+// AsTime returns the time.Time value if v is [TimeKind]. [StringKind]
+// values are parsed as RFC 3339.
 func (v Value) AsTime() (time.Time, error) {
 	switch v.kind {
 	case TimeKind:
@@ -318,9 +292,9 @@ func (v Value) AsTime() (time.Time, error) {
 	}
 }
 
-// AsDuration returns the duration value if v is DurationKind. StringKind
-// values are parsed via time.ParseDuration as a convenience; other kinds
-// error.
+// AsDuration returns the duration value if v is [DurationKind].
+// [StringKind] values are parsed via time.ParseDuration; [IntKind]
+// values are interpreted as nanoseconds.
 func (v Value) AsDuration() (time.Duration, error) {
 	switch v.kind {
 	case DurationKind:
@@ -341,8 +315,8 @@ func (v Value) AsDuration() (time.Duration, error) {
 	}
 }
 
-// AsSlice returns the underlying []Value if v is SliceKind, else an error.
-// The returned slice is the registry's storage — callers must not mutate it.
+// AsSlice returns the underlying []Value if v is [SliceKind]. The
+// returned slice aliases the registry's storage and must not be mutated.
 func (v Value) AsSlice() ([]Value, error) {
 	if v.kind != SliceKind {
 		return nil, typeMismatchErr(v.kind, "slice")
@@ -351,9 +325,8 @@ func (v Value) AsSlice() ([]Value, error) {
 	return s, nil
 }
 
-// AsMap returns the underlying map[string]Value if v is MapKind, else an
-// error. The returned map is the registry's storage — callers must not
-// mutate it.
+// AsMap returns the underlying map[string]Value if v is [MapKind]. The
+// returned map aliases the registry's storage and must not be mutated.
 func (v Value) AsMap() (map[string]Value, error) {
 	if v.kind != MapKind {
 		return nil, typeMismatchErr(v.kind, "map")
@@ -362,7 +335,7 @@ func (v Value) AsMap() (map[string]Value, error) {
 	return m, nil
 }
 
-// AsRaw returns the RawValue if v is RawKind, else an error.
+// AsRaw returns the [RawValue] if v is [RawKind].
 func (v Value) AsRaw() (RawValue, error) {
 	if v.kind != RawKind {
 		return RawValue{}, typeMismatchErr(v.kind, "raw")
@@ -371,40 +344,28 @@ func (v Value) AsRaw() (RawValue, error) {
 	return r, nil
 }
 
-// typeMismatchErr is the common shape used by the As* accessors. It wraps
-// ErrTypeMismatch and includes the source and target type names for error
-// formatting.
 func typeMismatchErr(have ValueKind, want string) error {
 	return fmt.Errorf("%w: have %s, want %s", ErrTypeMismatch, have, want)
 }
 
-// RawValue holds an un-decoded value as bytes plus a format hint. Used when a
-// caller wants to defer decoding — e.g., a config field whose contents are a
-// JSON-encoded blob to be parsed by the application, not the registry.
-//
-// The Format field is a codec name from the registry (e.g., "json", "yaml")
-// or any user-supplied string a custom codec recognizes.
+// RawValue holds undecoded bytes plus a format hint. Format is a codec
+// name registered in the registry's codec set (e.g. "json", "yaml") or
+// any string a custom codec recognizes.
 type RawValue struct {
 	Format string
 	Data   []byte
 }
 
-// Decode parses RawValue's bytes through the codec named by
-// [RawValue.Format], looking the codec up in the package-level
-// [DefaultCodecs] set, and assigns the result into v. v MUST be a
-// non-nil pointer:
+// Decode parses rv.Data through the codec named by rv.Format and
+// assigns the result into v. v must be a non-nil pointer:
 //
-//   - A `*map[string]any` (or `*any`) target receives the codec's
-//     decoded payload directly.
-//   - A `*Value` target receives the payload wrapped via
-//     [NewValue].
-//   - A pointer to a struct triggers a one-shot struct walk over
-//     the decoded map (same rules the bind walker's `format=` tag
-//     uses).
+//   - *map[string]any or *any receives the decoded payload directly.
+//   - *Value receives the payload wrapped via [NewValue].
+//   - Pointer-to-struct triggers a one-shot struct walk over the
+//     decoded map.
 //
-// Returns a wrapped [ErrUnsupportedFormat] when no codec is
-// registered under rv.Format. Codec-decode errors propagate
-// untouched.
+// Returns wrapped [ErrUnsupportedFormat] when no codec matches
+// rv.Format.
 func (rv RawValue) Decode(v any) error {
 	if v == nil {
 		return fmt.Errorf("%w: RawValue.Decode: nil target", ErrInvalidPath)
@@ -430,8 +391,6 @@ func (rv RawValue) Decode(v any) error {
 		*dst = NewValue(decoded)
 		return nil
 	}
-	// Struct pointer: use the same MapKind → struct walker as the
-	// `format=` tag path.
 	rv2 := reflect.ValueOf(v)
 	if rv2.Kind() != reflect.Pointer || rv2.IsNil() {
 		return fmt.Errorf("%w: RawValue.Decode: %T is not a supported target",

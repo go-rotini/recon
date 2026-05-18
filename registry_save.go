@@ -7,41 +7,28 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	rotinifs "github.com/go-rotini/fs"
 )
 
-// Save serializes the current snapshot through a codec and writes
-// the resulting bytes to w. The codec is selected by
-// [WithSaveFormat]; Save with no [WithSaveFormat] returns a wrapped
-// [ErrUnsupportedFormat] because the [io.Writer] has no path
-// extension to fall back on.
+// Save serializes the current snapshot through a codec and writes the
+// bytes to w. The codec is named by [WithSaveFormat]; without it Save
+// returns a wrapped [ErrUnsupportedFormat] since an [io.Writer] has no
+// extension to detect from.
 //
-// The four save-flavored methods cover distinct destinations:
+// Save / [SaveTo] / [SaveString] / [GenerateTemplate] differ in
+// destination: Save writes to any [io.Writer]; SaveTo writes to a
+// file path with atomic write-temp-then-rename; SaveString returns
+// the encoded form as a string; GenerateTemplate emits a stub
+// document with defaults included.
 //
-//   - Save: any [io.Writer] (network socket, buffer, stdout) — needs
-//     [WithSaveFormat] because there's no extension to detect from.
-//   - SaveTo: a file path — atomic write-temp + rename; format
-//     detected from the path's extension.
-//   - SaveString: same payload as Save, returned as a string —
-//     convenience for callers feeding the result back into
-//     templating / logging.
-//   - GenerateTemplate: produces a stub config with defaults
-//     pre-populated — the "myapp config init" entry point.
+// Default policy is safe to pipe anywhere:
+//   - Secret-marked keys are redacted via [WithSecretRedactor] unless
+//     [WithSaveIncludeSecrets] is set.
+//   - Default-only keys are omitted unless [WithSaveIncludeDefaults]
+//     is set.
+//   - [WithSaveOnly] limits output to a sub-tree.
 //
-// The default policy is "safe to pipe anywhere":
-//
-//   - Secret-marked keys (via [Registry.MarkSecret] or a `secret`-
-//     tagged [Bind] field) are redacted via the registry's
-//     [WithSecretRedactor]. Pass [WithSaveIncludeSecrets] to emit
-//     the verbatim value when the destination is known-private.
-//   - Default-only keys (the snapshot's "default" provenance) are
-//     omitted. Pass [WithSaveIncludeDefaults] to include them.
-//   - A sub-tree filter ([WithSaveOnly]) limits the output to keys
-//     under the named prefix.
-//
-// Save reads the registry's current snapshot atomically; concurrent
-// reloads do NOT interleave with the encode.
+// Save reads the current snapshot atomically; concurrent reloads do
+// not interleave with the encode.
 func (r *Registry) Save(w io.Writer, opts ...SaveOption) error {
 	if err := r.validateNotClosed(); err != nil {
 		return err
@@ -54,14 +41,10 @@ func (r *Registry) Save(w io.Writer, opts ...SaveOption) error {
 	return r.encodeWith(w, cfg)
 }
 
-// SaveTo is the path-aware variant of [Save]. The format is detected
-// from path's extension when [WithSaveFormat] is not supplied; the
-// file is created (or overwritten) and closed before SaveTo returns.
-//
-// The atomic-rename pattern (write to .tmp + rename) is used so a
-// concurrent reader never observes a partially-written file. The
-// temporary file lives in the same directory as path so the rename
-// stays atomic on every supported filesystem.
+// SaveTo is the path-aware [Save]. The format is detected from path's
+// extension when [WithSaveFormat] is not supplied. The temp file lives
+// next to the target so the rename stays atomic across exotic
+// filesystems.
 func (r *Registry) SaveTo(path string, opts ...SaveOption) error {
 	if err := r.validateNotClosed(); err != nil {
 		return err
@@ -77,9 +60,6 @@ func (r *Registry) SaveTo(path string, opts ...SaveOption) error {
 			ErrUnsupportedFormat, path)
 	}
 
-	// Write to a temp file in the same directory, then rename. The
-	// temp lives next to the target so the rename can stay atomic
-	// even across exotic filesystems (overlayfs, tmpfs, …).
 	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("recon: SaveTo create tmp: %w", err)
@@ -99,12 +79,10 @@ func (r *Registry) SaveTo(path string, opts ...SaveOption) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("recon: SaveTo rename %q → %q: %w", tmpPath, path, err)
 	}
-	_ = rotinifs.Exists // keep the import alive for future watch-aware integrations
 	return nil
 }
 
-// encodeWith is the shared body of Save / SaveTo. The format and
-// every per-call SaveOption have already been resolved into cfg.
+// encodeWith is the shared body of [Save] / [SaveTo].
 func (r *Registry) encodeWith(w io.Writer, cfg saveOptions) error {
 	codec, err := r.resolveSaveCodec(cfg.format)
 	if err != nil {
@@ -113,7 +91,7 @@ func (r *Registry) encodeWith(w io.Writer, cfg saveOptions) error {
 
 	snap := r.state.snapshot.Load()
 	if snap == nil {
-		// Empty snapshot — still produce a valid empty document.
+		// Empty snapshot still produces a valid empty document.
 		b, encErr := codec.Encode(map[string]any{})
 		if encErr != nil {
 			return fmt.Errorf("recon: Save encode: %w", encErr)
@@ -141,9 +119,8 @@ func (r *Registry) encodeWith(w io.Writer, cfg saveOptions) error {
 	return nil
 }
 
-// resolveSaveCodec looks up the codec by name in the registry's
-// configured codec set. Returns a wrapped [ErrUnsupportedFormat]
-// when no codec answers to that name.
+// resolveSaveCodec looks the codec named format up in the registry's
+// codec set. Returns wrapped [ErrUnsupportedFormat] when unknown.
 func (r *Registry) resolveSaveCodec(format string) (Codec, error) {
 	codecs := r.state.opts.codecs
 	if codecs == nil {
@@ -157,9 +134,6 @@ func (r *Registry) resolveSaveCodec(format string) (Codec, error) {
 	return c, nil
 }
 
-// buildSaveOptions runs a fresh saveOptions through the supplied
-// SaveOption closures. Centralized so Save / SaveTo share the option
-// resolution.
 func buildSaveOptions(opts []SaveOption) saveOptions {
 	cfg := saveOptions{}
 	for _, opt := range opts {
@@ -168,14 +142,11 @@ func buildSaveOptions(opts []SaveOption) saveOptions {
 	return cfg
 }
 
-// buildSavePayload collapses snap into the map[string]any shape the
-// codec encodes, applying the per-call filters in order:
-//
-//  1. Keep only canonical paths (skip alias entries).
-//  2. Filter by [WithSaveOnly] prefix.
-//  3. Filter out default-only keys unless [WithSaveIncludeDefaults].
-//  4. Redact secret-marked keys unless [WithSaveIncludeSecrets].
-//  5. Nest each surviving leaf into the result map.
+// buildSavePayload collapses snap into the map shape the codec
+// encodes, applying the save filters in order: skip alias entries,
+// filter by [WithSaveOnly] prefix, drop default-only keys unless
+// [WithSaveIncludeDefaults], redact secrets unless
+// [WithSaveIncludeSecrets].
 func buildSavePayload(
 	snap *Snapshot,
 	cfg saveOptions,
@@ -205,15 +176,14 @@ func buildSavePayload(
 				if redactor != nil {
 					leaf = redactor(v.String())
 				} else {
-					// No redactor: omit the key entirely rather than
-					// emitting the verbatim secret.
+					// No redactor: omit rather than emit the secret.
 					continue
 				}
 			}
 		}
 
-		// Strip the WithSaveOnly prefix from the output path so the
-		// resulting document is a self-contained sub-tree.
+		// Strip the WithSaveOnly prefix so the document is a
+		// self-contained sub-tree.
 		writePath := p
 		if len(prefix) > 0 {
 			writePath = p.After(prefix)
@@ -226,10 +196,7 @@ func buildSavePayload(
 	return out
 }
 
-// SaveString is a one-shot helper for callers that want the encoded
-// form as a string without dealing with [io.Writer]. Returns the
-// encoded payload + nil on success; an empty string + wrapped error
-// otherwise.
+// SaveString returns the encoded form as a string.
 func (r *Registry) SaveString(opts ...SaveOption) (string, error) {
 	var b strings.Builder
 	if err := r.Save(&b, opts...); err != nil {
@@ -238,14 +205,11 @@ func (r *Registry) SaveString(opts ...SaveOption) (string, error) {
 	return b.String(), nil
 }
 
-// GenerateTemplate emits a stub configuration document populated
-// with the registry's currently-known keys, encoded in the requested
-// format. Used to produce a starter config file (`myapp config init`
-// → `config.example.yaml`) — defaults-included by default; secret-
-// marked keys are redacted unless [WithSaveIncludeSecrets] is set.
-//
-// Returns a wrapped [ErrUnsupportedFormat] when format is unknown to
-// the registry's codec set, or when format is empty.
+// GenerateTemplate emits a stub configuration document with defaults
+// included, encoded in format. Used to produce a starter config file.
+// Secret-marked keys are redacted unless [WithSaveIncludeSecrets].
+// Returns wrapped [ErrUnsupportedFormat] when format is unknown or
+// empty.
 func (r *Registry) GenerateTemplate(format string, opts ...SaveOption) ([]byte, error) {
 	if err := r.validateNotClosed(); err != nil {
 		return nil, err
@@ -255,8 +219,6 @@ func (r *Registry) GenerateTemplate(format string, opts ...SaveOption) ([]byte, 
 			ErrUnsupportedFormat)
 	}
 
-	// Reuse the Save machinery: a template is just a Save with
-	// defaults pre-enabled and a specific format pin.
 	cfg := saveOptions{format: format, includeDefaults: true}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -290,10 +252,8 @@ func (r *Registry) GenerateTemplate(format string, opts ...SaveOption) ([]byte, 
 	return b, nil
 }
 
-// TemplateKeys returns the sorted list of paths [GenerateTemplate]
-// would include with the supplied [SaveOption] set. Useful for
-// "myapp config init --keys" tooling that wants to enumerate the
-// fields before generating the file.
+// TemplateKeys returns the sorted paths [GenerateTemplate] would
+// include with opts. Useful for `config init --keys` tooling.
 func (r *Registry) TemplateKeys(opts ...SaveOption) []Path {
 	if r.validateNotClosed() != nil {
 		return nil

@@ -8,27 +8,16 @@ import (
 	"time"
 )
 
-// PollWatcher is the stdlib-only [WatcherFactory] fallback. It periodically
-// stats the watched path and emits a [SourceChange] when the file's
-// mtime, size, or SHA-256 digest changes since the previous tick.
-//
-// Use PollWatcher when:
-//   - the runtime doesn't have a usable native filesystem-notification
-//     backend (network mounts, container overlays);
-//   - tests want fully-deterministic event timing without leaning on
-//     go-rotini/fs's debouncer;
-//   - you'd rather not depend on fs.Watcher at all.
-//
-// The digest check exists because mtime alone is unreliable on some
-// platforms (sub-second resolution; touch-without-change). It runs only
-// when stat reports a same-size file with a stale mtime — the common
-// case of "file rewritten, new size" never opens the file.
+// PollWatcher is the stdlib-only [WatcherFactory] fallback. It stats the
+// watched path on a tick and emits a [SourceChange] when size, mtime, or
+// SHA-256 digest differs from the previous sample. Use it when a native
+// fs-notification backend is unavailable or undesirable.
 type PollWatcher struct {
 	interval time.Duration
 }
 
-// NewPollWatcher constructs a [PollWatcher] that fires at interval. An
-// interval ≤ 0 is clamped to the default (1 second).
+// NewPollWatcher returns a [PollWatcher] that ticks at interval. An
+// interval ≤ 0 is clamped to one second.
 func NewPollWatcher(interval time.Duration) *PollWatcher {
 	if interval <= 0 {
 		interval = time.Second
@@ -36,11 +25,9 @@ func NewPollWatcher(interval time.Duration) *PollWatcher {
 	return &PollWatcher{interval: interval}
 }
 
-// Watch implements [WatcherFactory]. The first tick fires at
-// time.Now()+interval; the channel is closed when ctx is canceled. A
-// stat error after a previously-successful read surfaces as a
-// SourceChange with a non-nil Err so the reload engine can decide
-// whether to retain the previous snapshot.
+// Watch implements [WatcherFactory]. The first tick fires after
+// interval; the channel is closed when ctx is canceled. Stat errors are
+// surfaced as a [SourceChange] with non-nil Err.
 func (w *PollWatcher) Watch(ctx context.Context, path string) (<-chan SourceChange, error) {
 	if path == "" {
 		return nil, fmt.Errorf("%w: PollWatcher.Watch: empty path", ErrInvalidPath)
@@ -50,17 +37,13 @@ func (w *PollWatcher) Watch(ctx context.Context, path string) (<-chan SourceChan
 	return out, nil
 }
 
-// poll is the goroutine body for [PollWatcher.Watch]. It samples the
-// path's stat + digest at each interval and emits a SourceChange when
-// the sample differs from the previous one.
 func (w *PollWatcher) poll(ctx context.Context, path string, out chan<- SourceChange) {
 	defer close(out)
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 
 	// First sample establishes the baseline. A stat error here is
-	// silently absorbed — the first real tick will surface the same
-	// condition through the regular error path.
+	// absorbed; the next real tick will surface the same condition.
 	prev, baseErr := pollSnap(path)
 	_ = baseErr
 	for {
@@ -70,8 +53,6 @@ func (w *PollWatcher) poll(ctx context.Context, path string, out chan<- SourceCh
 		case <-ticker.C:
 			cur, err := pollSnap(path)
 			if err != nil {
-				// Emit an error change once; the reload engine
-				// decides what to do (retain previous snapshot).
 				select {
 				case out <- SourceChange{Err: err}:
 				case <-ctx.Done():
@@ -91,9 +72,9 @@ func (w *PollWatcher) poll(ctx context.Context, path string, out chan<- SourceCh
 	}
 }
 
-// pollSample captures everything the poll loop needs to decide whether a
-// file has changed since the last tick. Stat-derived fields are cheap;
-// the digest is computed lazily only when stat alone is ambiguous.
+// pollSample captures the per-tick file state. Digest is computed only
+// for small files (see pollSnap) so the common "rewritten, new size"
+// case never opens the file.
 type pollSample struct {
 	exists bool
 	size   int64
@@ -102,10 +83,6 @@ type pollSample struct {
 	hashed bool
 }
 
-// equal reports whether two samples represent the same file content as
-// far as the poll loop can tell. A missing-to-present transition (or
-// vice versa) always counts as a change; otherwise size + mtime + digest
-// must match.
 func (s pollSample) equal(o pollSample) bool {
 	if s.exists != o.exists {
 		return false
@@ -125,8 +102,8 @@ func (s pollSample) equal(o pollSample) bool {
 	return true
 }
 
-// pollSnap captures the current pollSample for path. A missing file is
-// not an error; "not present" is a valid sample value.
+// pollSnap returns the current [pollSample] for path. A missing file is
+// reported as a valid {exists: false} sample, not an error.
 func pollSnap(path string) (pollSample, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -141,8 +118,8 @@ func pollSnap(path string) (pollSample, error) {
 		mtime:  info.ModTime(),
 	}
 	// Hash small files so a same-size, same-mtime rewrite still trips
-	// the change detector. Skip the digest for files larger than 1 MiB —
-	// at that size the size+mtime signal is reliable enough.
+	// the change detector. Skip above 1 MiB where size+mtime is
+	// sufficient.
 	const hashCutoff = 1 << 20
 	if info.Size() <= hashCutoff {
 		data, err := os.ReadFile(path)

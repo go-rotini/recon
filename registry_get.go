@@ -5,14 +5,9 @@ import (
 	"time"
 )
 
-// Get returns the [Value] resolved for key. The bool reports whether any
-// layer of the registry — explicit override, pinned source, registered
-// source, alias chain, default — supplied a value; the error wraps a
-// source-side failure that surfaced during the last snapshot rebuild.
-//
-// An empty-string value counts as set: a source returning
-// (Value{kind:StringKind, raw:""}, true, nil) is reported as found. Use
-// [Value.IsZero] or check [Value.Kind] for "set to null" detection.
+// Get returns the [Value] resolved for key. The bool reports whether
+// any layer of the registry supplied a value; an empty string counts
+// as set. The error is non-nil only when the registry is closed.
 func (r *Registry) Get(key string) (Value, bool, error) {
 	if err := r.validateNotClosed(); err != nil {
 		return Value{}, false, err
@@ -25,8 +20,7 @@ func (r *Registry) Get(key string) (Value, bool, error) {
 	return v, ok, nil
 }
 
-// GetPath is the [Path]-typed variant of [Get]. Useful when the caller
-// already has a Path in hand and wants to avoid the string→Path parse.
+// GetPath is the [Path]-typed variant of [Registry.Get].
 func (r *Registry) GetPath(p Path) (Value, bool, error) {
 	if err := r.validateNotClosed(); err != nil {
 		return Value{}, false, err
@@ -40,8 +34,7 @@ func (r *Registry) GetPath(p Path) (Value, bool, error) {
 }
 
 // GetString returns the string value at key. Returns
-// ("", false, ErrTypeMismatch) when the resolved kind is not StringKind.
-// Use the generic [Get] / [Bind] for richer coercion.
+// [ErrTypeMismatch] when the resolved kind is not [StringKind].
 func (r *Registry) GetString(key string) (string, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
@@ -54,9 +47,8 @@ func (r *Registry) GetString(key string) (string, bool, error) {
 	return s, true, nil
 }
 
-// GetInt returns the value at key as int. Wraps int64 → int with no
-// overflow check (Go converts via truncation on 32-bit platforms — callers
-// on those targets should prefer [Registry.GetInt64]).
+// GetInt returns the value at key as int. Wraps int64 → int without
+// overflow check; 32-bit-target callers should prefer [GetInt64].
 func (r *Registry) GetInt(key string) (int, bool, error) {
 	i64, ok, err := r.GetInt64(key)
 	return int(i64), ok, err
@@ -101,8 +93,9 @@ func (r *Registry) GetBool(key string) (bool, bool, error) {
 	return b, true, nil
 }
 
-// GetDuration returns the value at key as time.Duration. Accepts a native
-// time.Duration value or a parsable string (via time.ParseDuration).
+// GetDuration returns the value at key as time.Duration. A native
+// time.Duration value or a string parseable by time.ParseDuration is
+// accepted.
 func (r *Registry) GetDuration(key string) (time.Duration, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
@@ -115,8 +108,8 @@ func (r *Registry) GetDuration(key string) (time.Duration, bool, error) {
 	return d, true, nil
 }
 
-// GetTime returns the value at key as time.Time. Accepts a native time.Time
-// value or an RFC 3339 string.
+// GetTime returns the value at key as time.Time. A native time.Time
+// or an RFC 3339 string is accepted.
 func (r *Registry) GetTime(key string) (time.Time, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
@@ -129,9 +122,8 @@ func (r *Registry) GetTime(key string) (time.Time, bool, error) {
 	return t, true, nil
 }
 
-// GetStringSlice returns the value at key as []string. The wire value must
-// be SliceKind; each element is read via [Value.AsString], so a mixed-type
-// slice will fail with the first non-string element's error.
+// GetStringSlice returns the value at key as []string. The wire kind
+// must be [SliceKind]; each element is projected via [Value.AsString].
 func (r *Registry) GetStringSlice(key string) ([]string, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
@@ -152,8 +144,8 @@ func (r *Registry) GetStringSlice(key string) ([]string, bool, error) {
 	return out, true, nil
 }
 
-// GetStringMap returns the value at key as map[string]string. The wire
-// value must be MapKind; each map entry is read via [Value.AsString].
+// GetStringMap returns the value at key as map[string]string. The
+// wire kind must be [MapKind].
 func (r *Registry) GetStringMap(key string) (map[string]string, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
@@ -174,9 +166,8 @@ func (r *Registry) GetStringMap(key string) (map[string]string, bool, error) {
 	return out, true, nil
 }
 
-// GetAny returns the underlying Go value at key (the same shape
-// [Value.Any] returns). Use this when the caller is happy with a type
-// assertion at the call site and doesn't want the typed accessor wrappers.
+// GetAny returns the underlying Go value at key — the same shape
+// [Value.Any] returns.
 func (r *Registry) GetAny(key string) (any, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
@@ -185,8 +176,8 @@ func (r *Registry) GetAny(key string) (any, bool, error) {
 	return v.Any(), true, nil
 }
 
-// IsSet reports whether any layer of the registry has a value for key. An
-// empty-string value still reports true (matching the [Source] contract).
+// IsSet reports whether any layer of the registry has a value for key.
+// An empty string still counts as set.
 func (r *Registry) IsSet(key string) bool {
 	if r.validateNotClosed() != nil {
 		return false
@@ -199,10 +190,9 @@ func (r *Registry) IsSet(key string) bool {
 	return ok
 }
 
-// AllKeys returns every key the registry knows about (canonical paths plus
-// alias paths, sorted). For a sub view, only keys under the sub's prefix
-// are returned, with the prefix stripped. Useful for tab-completion and
-// "config show" output.
+// AllKeys returns every known key (canonical and alias) in sorted
+// order. On a sub view, only keys under the sub's prefix are returned
+// with the prefix stripped.
 func (r *Registry) AllKeys() []string {
 	if r.validateNotClosed() != nil {
 		return nil
@@ -229,18 +219,10 @@ func (r *Registry) AllKeys() []string {
 	return out
 }
 
-// Get is the generic typed accessor. It dispatches by T's concrete type to
-// the underlying As* accessor on [Value]; types not handled return
-// (zero, false, ErrTypeMismatch).
-//
-// Compile-time type safety: callers write recon.Get[int](r, "port") and
-// the compiler enforces the call-site type. The dispatch is a small switch
-// — see [Value]'s As* methods for the per-kind coercion rules.
-//
-// Supported T: string, bool, int, int64, float64, time.Time,
-// time.Duration, []string, map[string]string, [Value]. Everything
-// else returns ErrTypeMismatch; callers wanting struct-field
-// binding should use [Registry.Bind].
+// Get is the generic typed accessor. Supported T: string, bool, int,
+// int64, float64, time.Time, time.Duration, []string, [Value].
+// Unsupported types return wrapped [ErrTypeMismatch]; callers wanting
+// struct binding should use [Registry.Bind].
 func Get[T any](r *Registry, key string) (T, bool, error) {
 	var zero T
 	v, ok, err := r.Get(key)
@@ -254,8 +236,8 @@ func Get[T any](r *Registry, key string) (T, bool, error) {
 	return out, true, nil
 }
 
-// MustGet panics on error or not-set. Useful in main() when a missing key
-// is a programmer error rather than a runtime condition.
+// MustGet panics on error or not-set. Useful in main() when a missing
+// key is a programmer error.
 func MustGet[T any](r *Registry, key string) T {
 	v, ok, err := Get[T](r, key)
 	switch {
@@ -267,14 +249,9 @@ func MustGet[T any](r *Registry, key string) T {
 	return v
 }
 
-// coerceValueTo is the typed entry point of the type-erased
-// dispatch pair: it forwards to [coerceValueAny] (which switches on
-// T via a zero-value pointer) and type-asserts the returned `any`
-// back into T. Adding a new supported T is a matter of editing the
-// switch in [coerceValueAny].
-//
-// Returns the zero T and an error when the value cannot be coerced;
-// an unhandled T returns a wrapped [ErrTypeMismatch].
+// coerceValueTo is the typed half of the dispatch pair. The
+// type-erased [coerceValueAny] handles the switch; this layer
+// type-asserts back into T.
 func coerceValueTo[T any](v Value) (T, error) {
 	var zero T
 	out, err := coerceValueAny(v, &zero)
@@ -292,12 +269,8 @@ func coerceValueTo[T any](v Value) (T, error) {
 	return typed, nil
 }
 
-// coerceValueAny is the type-erased half of [coerceValueTo]. The
-// zero pointer carries T's concrete type so the switch can dispatch
-// by type assertion; the return is `any` to let the caller perform
-// the final T type-assertion in one place.
-//
-// Returns (any, nil) on success; (nil, err) on coercion failure.
+// coerceValueAny dispatches by T using a zero-value pointer. Adding a
+// new supported T is a matter of editing this switch.
 func coerceValueAny[T any](v Value, zero *T) (any, error) {
 	switch any(*zero).(type) {
 	case string:

@@ -6,80 +6,82 @@ import (
 	"strings"
 )
 
-// Sentinel errors. Concrete error types in this package wrap one of these so
-// callers can use errors.Is for classification regardless of whether the
-// concrete error is bare or aggregated inside a *MultiError.
+// Sentinel errors. Concrete error types in this package wrap one of
+// these so callers can use errors.Is for classification.
 var (
-	// ErrKeyNotFound is returned when a registry lookup finds no value for
-	// the requested key and no default applies.
+	// ErrKeyNotFound is returned when a lookup finds no value and no
+	// default applies.
 	ErrKeyNotFound = errors.New("recon: key not found")
 
-	// ErrTypeMismatch is returned when a Value's wire kind does not match
-	// the type a caller requested via an As* accessor.
+	// ErrTypeMismatch is returned when a [Value]'s wire kind does not
+	// match the type a caller requested via an As* accessor.
 	ErrTypeMismatch = errors.New("recon: type mismatch")
 
-	// ErrMissingRequired is returned when a key marked required has no value
-	// supplied by any source and no default.
+	// ErrMissingRequired is returned when a key tagged required has no
+	// value supplied by any source and no default.
 	ErrMissingRequired = errors.New("recon: missing required value")
 
-	// ErrEmptyValue is returned when a key marked notEmpty resolved to the
-	// empty string.
+	// ErrEmptyValue is returned when a key tagged notEmpty resolved to
+	// the empty string.
 	ErrEmptyValue = errors.New("recon: empty value")
 
-	// ErrUnknownKey is returned in strict mode when a source supplies a key
-	// the bind target does not declare.
+	// ErrUnknownKey is returned in strict mode when a source supplies
+	// a key the bind target does not declare.
 	ErrUnknownKey = errors.New("recon: unknown key (strict mode)")
 
-	// ErrImmutableChanged is returned when a reload would change a key
-	// tagged immutable.
+	// ErrImmutableChanged is returned when a reload would change a
+	// key tagged immutable.
 	ErrImmutableChanged = errors.New("recon: immutable key changed")
 
-	// ErrCoercion is returned when a wire value cannot be converted to the
-	// requested Go type.
+	// ErrCoercion is returned when a wire value cannot be converted
+	// to the requested Go type.
 	ErrCoercion = errors.New("recon: coercion failed")
 
-	// ErrReadOnlySource is returned when a write is attempted against a
-	// source that cannot accept it.
+	// ErrReadOnlySource is returned when a write is attempted against
+	// a read-only source.
 	ErrReadOnlySource = errors.New("recon: source is read-only")
 
-	// ErrAliasCycle is returned when RegisterAlias would create a cycle.
+	// ErrAliasCycle is returned when [Registry.RegisterAlias] would
+	// create a cycle.
 	ErrAliasCycle = errors.New("recon: alias cycle")
 
-	// ErrInvalidPath is returned when a path argument is malformed (e.g.,
-	// nil receiver, illegal escape).
+	// ErrInvalidPath is returned when a path argument is malformed.
 	ErrInvalidPath = errors.New("recon: invalid path")
 
-	// ErrUnsupportedFormat is returned when no registered codec matches the
-	// requested format name or file extension.
+	// ErrUnsupportedFormat is returned when no registered codec
+	// matches a requested format or file extension.
 	ErrUnsupportedFormat = errors.New("recon: unsupported format")
 
-	// ErrValidation is returned when a SchemaValidator reports failure.
+	// ErrValidation is returned when a [SchemaValidator] reports
+	// failure.
 	ErrValidation = errors.New("recon: validation failed")
 
-	// ErrSourceConflict is returned when AddSource / RegisterAlias would
+	// ErrSourceConflict is returned when [Registry.AddSource] would
 	// introduce a duplicate name.
 	ErrSourceConflict = errors.New("recon: source name conflict")
 
-	// ErrRegistryClosed is returned by operations on a registry whose
-	// Close() has been called.
+	// ErrRegistryClosed is returned by operations on a Closed
+	// registry.
 	ErrRegistryClosed = errors.New("recon: registry closed")
 
-	// ErrNilContext is returned when a context-taking call receives nil.
+	// ErrNilContext is returned when a context-taking call receives
+	// nil.
 	ErrNilContext = errors.New("recon: nil context")
 
-	// ErrSchemaInvalid is returned when a supplied schema fails to compile.
+	// ErrSchemaInvalid is returned when a supplied schema fails to
+	// compile.
 	ErrSchemaInvalid = errors.New("recon: schema invalid")
 )
 
-// Position is a source-local position used by ParseError. Line and Column are
-// 1-indexed for human display; both zero means the position is unknown.
+// Position is a source-local position used by [ParseError]. Line and
+// Column are 1-indexed; both zero means unknown.
 type Position struct {
 	Line   int
 	Column int
 }
 
-// String formats the position as "line:col" or returns "" when the position
-// is the zero value.
+// String formats the position as "line:col", or returns "" for the
+// zero value.
 func (p Position) String() string {
 	if p.Line == 0 && p.Column == 0 {
 		return ""
@@ -87,14 +89,13 @@ func (p Position) String() string {
 	return fmt.Sprintf("%d:%d", p.Line, p.Column)
 }
 
-// MultiError aggregates per-field / per-key errors from a single Load or Bind
-// invocation. Implements the errors.Unwrap() []error contract introduced in
-// Go 1.20 so errors.Is and errors.As traverse every contained error.
+// MultiError aggregates per-field / per-key errors from a single Load
+// or Bind. Implements the Go 1.20+ errors.Unwrap() []error contract so
+// errors.Is and errors.As traverse every contained error.
 type MultiError struct {
 	Errors []error
 }
 
-// Error returns a newline-separated list of the contained error messages.
 func (m *MultiError) Error() string {
 	switch len(m.Errors) {
 	case 0:
@@ -116,10 +117,9 @@ func (m *MultiError) Error() string {
 	}
 }
 
-// Unwrap returns every contained error so errors.Is / errors.As recurse.
 func (m *MultiError) Unwrap() []error { return m.Errors }
 
-// Append adds err to the MultiError. nil is a no-op.
+// Append adds err to the MultiError. Nil is a no-op.
 func (m *MultiError) Append(err error) {
 	if err == nil {
 		return
@@ -127,8 +127,8 @@ func (m *MultiError) Append(err error) {
 	m.Errors = append(m.Errors, err)
 }
 
-// MissingRequiredError reports that a required key was not supplied by any
-// source.
+// MissingRequiredError reports that a required key was not supplied
+// by any source.
 type MissingRequiredError struct {
 	Path    Path
 	Sources []string // names of sources consulted, in precedence order
@@ -141,11 +141,9 @@ func (e *MissingRequiredError) Error() string {
 	return fmt.Sprintf("recon: missing required value for %s (sources consulted: %s)", e.Path, strings.Join(e.Sources, ", "))
 }
 
-// Is matches errors.Is against ErrMissingRequired and against another
-// *MissingRequiredError for the same path. Direct comparison against the
-// sentinel (rather than errors.Is) avoids the false positive where a peer
-// *MissingRequiredError would otherwise short-circuit the match before the
-// path-equality check runs.
+// Is matches against [ErrMissingRequired] and against peer errors with
+// the same path. Direct comparison against the sentinel before the
+// peer check avoids false positives.
 func (e *MissingRequiredError) Is(target error) bool {
 	if target == ErrMissingRequired {
 		return true
@@ -157,8 +155,7 @@ func (e *MissingRequiredError) Is(target error) bool {
 	return false
 }
 
-// EmptyValueError reports that a key marked notEmpty resolved to the empty
-// string.
+// EmptyValueError reports that a notEmpty key resolved to "".
 type EmptyValueError struct {
 	Path   Path
 	Source string
@@ -180,11 +177,9 @@ func (e *EmptyValueError) Is(target error) bool {
 }
 
 // CoercionError reports that a wire value could not be converted to
-// the target Go type. When Secret is true, the underlying Cause is
-// suppressed from the rendered output so the caller's logs / error
-// channels never see the offending value — typical underlying causes
-// quote the value verbatim ("invalid syntax: \"hunter2\"") and the
-// secret-tag contract is that the value must never leave the registry.
+// the target Go type. When Secret is true, Cause is suppressed from
+// the rendered output so the offending value never leaves the
+// registry.
 type CoercionError struct {
 	Path     Path
 	Source   string
@@ -215,7 +210,8 @@ func (e *CoercionError) Is(target error) bool {
 	return errors.Is(target, ErrCoercion)
 }
 
-// UnknownKeyError reports that strict-mode decoding rejected an extra key.
+// UnknownKeyError reports that strict-mode decoding rejected an extra
+// key.
 type UnknownKeyError struct {
 	Path   Path
 	Source string
@@ -229,8 +225,8 @@ func (e *UnknownKeyError) Is(target error) bool {
 	return errors.Is(target, ErrUnknownKey)
 }
 
-// ImmutableChangedError reports that a reload tried to change a key tagged
-// immutable. Old and New are pre-redacted by the registry when the key is
+// ImmutableChangedError reports that a reload would change a key
+// tagged immutable. Old and New are pre-redacted when the key is
 // also tagged secret.
 type ImmutableChangedError struct {
 	Path Path
@@ -253,7 +249,8 @@ func (e *ImmutableChangedError) Is(target error) bool {
 	return false
 }
 
-// SourceError reports that a source failed to read, watch, or refresh.
+// SourceError reports that a source failed to read, watch, or
+// refresh.
 type SourceError struct {
 	Source string
 	Op     string // "get" / "watch" / "refresh" / "close"
@@ -266,8 +263,8 @@ func (e *SourceError) Error() string {
 
 func (e *SourceError) Unwrap() error { return e.Cause }
 
-// AliasCycleError reports that RegisterAlias would create a cycle. Chain lists
-// the offending alias chain in order.
+// AliasCycleError reports that [Registry.RegisterAlias] would create
+// a cycle. Chain lists the offending alias chain in walk order.
 type AliasCycleError struct {
 	Chain []Path
 }
@@ -284,11 +281,9 @@ func (e *AliasCycleError) Is(target error) bool {
 	return errors.Is(target, ErrAliasCycle)
 }
 
-// ValidationError reports that a SchemaValidator rejected a key.
-// When Secret is true, the Msg is replaced by "[redacted]" — a
-// validator's failure messages often quote the offending value
-// ("\"hunter2\" does not match pattern …") and the secret-tag
-// contract is that the value must never reach the caller's log.
+// ValidationError reports that a [SchemaValidator] rejected a key.
+// When Secret is true, Msg is replaced by "[redacted]" so the
+// offending value never reaches the caller's log.
 type ValidationError struct {
 	Path   Path
 	Rule   string
@@ -314,7 +309,7 @@ func (e *ValidationError) Is(target error) bool {
 // ParseError reports that a source's underlying format parser failed.
 type ParseError struct {
 	Source   string
-	Path     string // file path, for file sources; empty otherwise
+	Path     string // file path for file sources; empty otherwise
 	Position Position
 	Cause    error
 }
@@ -335,11 +330,10 @@ func (e *ParseError) Error() string {
 
 func (e *ParseError) Unwrap() error { return e.Cause }
 
-// DeprecationWarning is delivered (on Event.Warnings, not Event.Err) when a
-// value is read from a key tagged `deprecated`. It is non-fatal: the registry
-// emits it through the event channel and the consuming code (e.g., rotini's
-// OnProgramWarning hook) decides how to surface it. The Replacement field is
-// empty unless the `deprecated=` tag option supplied a suggested replacement.
+// DeprecationWarning is a non-fatal notice that a `deprecated`-tagged
+// key was read. Delivered on [Event.Warnings] and via
+// [Registry.DrainWarnings]. Replacement is empty unless the
+// `deprecated=` tag option named one.
 type DeprecationWarning struct {
 	Path        Path
 	Source      string

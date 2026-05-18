@@ -2,25 +2,16 @@ package recon
 
 import "fmt"
 
-// codec_shape.go — helpers that normalize a codec's decoded payload
-// into the uniform shape the registry expects (map[string]any /
-// []any trees, no implementation-specific node types).
-//
-// Codecs are required by their [Codec.Decode] contract to return
-// only the documented leaf types. The YAML / TOML codecs use these
-// helpers to collapse the occasional map[any]any (legacy keys,
-// non-string roots) into the canonical map[string]any.
+// Helpers that collapse a codec's decoded payload into the uniform
+// map[string]any / []any tree the registry expects. Codecs that may
+// return map[any]any (YAML, TOML) route their output through
+// [normalizeMap] at the [Codec.Decode] boundary.
 
-// normalizeMap collapses a decoder's root value into map[string]any.
-// Accepts the canonical map[string]any (passed through after a
-// recursive walk via [normalizeAnyMap]) and the legacy map[any]any
-// some decoders return. Non-string keys are coerced via
-// fmt.Sprint — lossy in theory but every config-shape input uses
-// string keys in practice.
-//
-// The bool return reports whether v was a map of either shape; a
-// non-map input returns (nil, false) so the calling codec can
-// reject the root as a non-mapping.
+// normalizeMap collapses v into map[string]any. Accepts map[string]any
+// (passed through via [normalizeAnyMap]) and the legacy map[any]any;
+// non-string keys are coerced through fmt.Sprint. Returns (nil, false)
+// when v is not a map of either shape so the caller can reject the
+// root.
 func normalizeMap(v any) (map[string]any, bool) {
 	switch m := v.(type) {
 	case map[string]any:
@@ -36,9 +27,8 @@ func normalizeMap(v any) (map[string]any, bool) {
 	}
 }
 
-// normalizeAnyMap recursively walks a map[string]any and rewrites
-// any nested map[any]any / []any nodes through [normalizeAny] so
-// the registry sees a uniform map[string]any / []any tree.
+// normalizeAnyMap recursively rewrites any nested map[any]any nodes
+// in m so the registry sees a uniform tree.
 func normalizeAnyMap(m map[string]any) map[string]any {
 	for k, v := range m {
 		m[k] = normalizeAny(v)
@@ -46,10 +36,6 @@ func normalizeAnyMap(m map[string]any) map[string]any {
 	return m
 }
 
-// normalizeAny is the per-element half of [normalizeAnyMap]. Maps
-// are recursed into; slices have each element normalized; every
-// other type is returned unchanged (recon's [NewValue] handles
-// leaf coercion).
 func normalizeAny(v any) any {
 	switch x := v.(type) {
 	case map[string]any:

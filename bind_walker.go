@@ -9,18 +9,14 @@ import (
 	rotinifs "github.com/go-rotini/fs"
 )
 
-// readFromFile is the file-reading indirection the
-// [bindWalker.applyFromFile] helper uses. Defaults to
-// [rotinifs.ReadFile] so the `fromFile` tag observes the same size
-// caps and error semantics as [FileSource] reads; tests that want
-// to drive the codepath without touching disk swap this var.
+// readFromFile is the indirection used by `fromFile`-tagged field
+// reads. Defaults to [rotinifs.ReadFile] so [FileSource]'s size caps
+// apply; tests override the var to avoid touching disk.
 var readFromFile = rotinifs.ReadFile
 
-// bindWalker carries the state a single Bind call needs as it
-// descends into nested structs: the source registry, the merged
-// decode options, the accumulator for per-field errors, and the set
-// of registry paths the walker consulted (for strict-mode
-// unknown-key detection).
+// bindWalker carries the state one [Registry.Bind] call needs as it
+// descends into nested structs. consulted is the set of paths the
+// walker resolved; strict mode reports every snapshot key not in it.
 type bindWalker struct {
 	registry  *Registry
 	opts      decodeOptions
@@ -28,9 +24,8 @@ type bindWalker struct {
 	consulted map[string]struct{}
 }
 
-// walk descends one struct level at a time. prefix is the parent's
-// path (already prepended with the registry's sub-prefix); the walker
-// appends each field's name / tag-path under it.
+// walk descends one struct level. prefix is the parent's path; the
+// walker appends each field's tag-derived segments under it.
 func (w *bindWalker) walk(rv reflect.Value, prefix Path) {
 	t := rv.Type()
 	for i := range t.NumField() {
@@ -44,24 +39,16 @@ func (w *bindWalker) walk(rv reflect.Value, prefix Path) {
 			continue
 		}
 
-		// Nested struct (non-time.Time, non-Unmarshaler): recurse,
-		// honoring `inline` / `embedded` flattening. Pointer-to-
-		// struct fields are treated identically — the walker
-		// allocates the pointee on first descent.
-		//
-		// A struct field tagged `format=<codec>` is intentionally
-		// NOT walked — it's a leaf that consumes a single string
-		// value (the encoded blob) and decodes it through the
-		// codec into the destination struct via
-		// [coerceStructFromMap]. Recursing here would look up
-		// non-existent sub-paths instead of consulting the field's
-		// own resolved string.
+		// A `format=`-tagged struct field is a leaf: the source value
+		// is a string blob the codec decodes into the struct via
+		// [coerceStructFromMap]. Recursing would look up non-existent
+		// sub-paths instead of consulting the field's own resolved
+		// string.
 		if tag.Format == "" && isWalkableStructValue(fv) {
 			w.walkNested(fv, prefix, sf, tag)
 			continue
 		}
 
-		// Leaf field: resolve, coerce, assign.
 		w.bindLeaf(fv, prefix, sf, tag)
 		if w.shouldShortCircuit() {
 			return
@@ -69,15 +56,10 @@ func (w *bindWalker) walk(rv reflect.Value, prefix Path) {
 	}
 }
 
-// walkNested handles fields whose Go type is itself a struct (or a
-// pointer to one). The decision tree:
-//
-//  1. `inline` tag or anonymous embedded struct → recurse with the
-//     same prefix (no field name added).
-//  2. Otherwise → recurse with prefix + field-name segment.
-//
-// Pointer-to-struct fields have their pointee allocated on first
-// descent so subsequent walks see a settable struct.
+// walkNested recurses into a struct or *struct field, allocating the
+// pointee if needed. `inline` and anonymous embedded fields recurse
+// under the parent's prefix; otherwise the field's segments are
+// appended.
 func (w *bindWalker) walkNested(fv reflect.Value, prefix Path, sf reflect.StructField, tag FieldTag) {
 	if fv.Kind() == reflect.Pointer {
 		if fv.IsNil() {
@@ -94,18 +76,11 @@ func (w *bindWalker) walkNested(fv reflect.Value, prefix Path, sf reflect.Struct
 	}
 }
 
-// bindLeaf resolves the field's key, applies the value-transform
-// tags (`fromFile`, `expand`, `format=`), runs the result through
-// coerce, and writes into fv. Tag side effects on the registry:
-//
-//   - `secret` propagates to MarkSecret so Describe / Save / errors
-//     redact.
-//   - `immutable` baselines the resolved value so subsequent
-//     snapshot candidates that change it are rejected.
-//   - `deprecated` queues a [DeprecationWarning] for the next watch
-//     event or [Registry.DrainWarnings] call.
-//   - `unset` clears the explicit-layer value (when present) AFTER
-//     a successful bind, so one-shot secrets aren't readable twice.
+// bindLeaf resolves the field's path, applies the value-transform tags
+// (`fromFile`, `expand`, `format=`), coerces, and assigns. Tag side
+// effects on the registry: `secret` marks; `immutable` baselines;
+// `deprecated` queues a [DeprecationWarning]; `unset` clears the
+// explicit-layer value after a successful bind.
 func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, sf reflect.StructField, tag FieldTag) {
 	path := w.pathFor(prefix, sf, tag)
 	w.consulted[path.String()] = struct{}{}
@@ -123,8 +98,7 @@ func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, sf reflect.StructFi
 		w.queueDeprecation(path, value.Source(), tag)
 	}
 
-	// Custom decoder dispatch wins outright when one matches the field
-	// type — it's the "I'll handle every coercion concern myself" hook.
+	// A custom decoder takes over the field outright.
 	if dec, ok := w.opts.customDecoders[fv.Type().String()]; ok && found {
 		out, err := dec(value)
 		if err != nil {
@@ -158,11 +132,9 @@ func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, sf reflect.StructFi
 		}
 	}
 
-	// Value-transform pipeline. Each transform runs only when its
-	// tag option is set; the order is fromFile → expand → format=
-	// so a file's contents can carry ${VAR} references, an env
-	// var can hold a path whose file contents are then re-decoded,
-	// and so on.
+	// Value-transform pipeline: fromFile → expand → format=. The order
+	// lets a file's contents carry ${refs}, and an env-var-supplied
+	// path's contents be re-decoded through a codec.
 	if tag.FromFile {
 		next, err := w.applyFromFile(value)
 		if err != nil {
@@ -227,18 +199,9 @@ func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, sf reflect.StructFi
 	w.applyPostBind(path, tag)
 }
 
-// emitUnknownKeyErrors appends one [*UnknownKeyError] to the walker's
-// accumulator for every snapshot key that wasn't consulted by the
-// bind target. Strict-mode opt-in.
-//
-// Scope: the registry's prefix limits which keys are considered. A
-// Sub(prefix).Bind only complains about keys under prefix; root-
-// registry Bind covers the whole snapshot.
-//
-// Provenance: the source name comes from the snapshot's per-key
-// chain — the highest-precedence contributor's name lands in
-// UnknownKeyError.Source. Alias keys are skipped (they were
-// already consumed by their canonical's Bind).
+// emitUnknownKeyErrors appends one [*UnknownKeyError] for every
+// snapshot key the bind target did not consult. Scoped to the
+// registry's prefix; alias keys are skipped.
 func (w *bindWalker) emitUnknownKeyErrors() {
 	snap := w.registry.state.snapshot.Load()
 	if snap == nil {
@@ -264,12 +227,9 @@ func (w *bindWalker) emitUnknownKeyErrors() {
 	}
 }
 
-// queueDeprecation pushes a [DeprecationWarning] onto the registry's
-// pending-warning queue. Used by [bindLeaf] when a tagged field has
-// `deprecated` set and a source actually supplied a value (deprecated
-// fields that fall through to default / required handling do NOT
-// generate warnings — the deprecation only matters when the
-// deprecated key was actively consulted).
+// queueDeprecation enqueues a [DeprecationWarning] for path. Called
+// only when a source actually supplied a value — falling back to a
+// default or hitting required-with-no-value does not emit.
 func (w *bindWalker) queueDeprecation(path Path, source string, tag FieldTag) {
 	msg := tag.DeprecationMessage
 	if msg == "" {
@@ -280,13 +240,10 @@ func (w *bindWalker) queueDeprecation(path Path, source string, tag FieldTag) {
 	})
 }
 
-// applyFromFile reads the file whose path is the resolved value's
-// string form and returns a new Value carrying the file's contents.
-// Used by [bindLeaf] when the field's `fromFile` tag is set.
-//
-// Trailing newlines are NOT stripped — secrets stored in
-// /run/secrets/... typically carry exactly the bytes the operator
-// committed; trimming would change the secret's value.
+// applyFromFile reads the file whose path is v's string form and
+// returns its contents as a new Value. Trailing newlines are not
+// stripped — a Docker / Kubernetes secret typically contains exactly
+// the bytes the operator committed.
 func (w *bindWalker) applyFromFile(v Value) (Value, error) {
 	pathStr, err := valueAsString(v)
 	if err != nil {
@@ -302,17 +259,12 @@ func (w *bindWalker) applyFromFile(v Value) (Value, error) {
 	return NewValue(string(data)), nil
 }
 
-// applyExpand substitutes ${other.key} references in the resolved
-// value's string form. Non-string-projectable values pass through
-// untouched — `expand` on a non-string field is a no-op rather than
-// an error, matching the "best-effort apply tag option" pattern.
+// applyExpand substitutes ${other.key} references in v's string form.
+// A non-string-projectable value passes through unchanged: `expand`
+// on a non-string field is a no-op rather than an error.
 func (w *bindWalker) applyExpand(v Value) (Value, error) {
 	s, asErr := valueAsString(v)
 	if asErr != nil {
-		// Intentional: a non-string-projectable value (slice, map,
-		// nested struct) cannot carry ${ref} markers, so `expand` is
-		// a tag-options no-op for that field — return the input value
-		// unchanged rather than failing the whole bind.
 		return v, nil //nolint:nilerr // documented best-effort no-op
 	}
 	expanded, err := expandValueRefs(s, w.registry)
@@ -322,10 +274,8 @@ func (w *bindWalker) applyExpand(v Value) (Value, error) {
 	return NewValue(expanded), nil
 }
 
-// applyFormatDecode runs the resolved value's string form through
-// the registry's codec set, returning a new Value carrying the
-// decoded shape. Used by `format=<codec>` to handle "this string
-// holds a JSON / YAML / TOML / etc. blob" patterns.
+// applyFormatDecode runs v's string form through the codec named
+// format, returning a Value carrying the decoded shape.
 func (w *bindWalker) applyFormatDecode(v Value, format string) (Value, error) {
 	codecs := w.registry.state.opts.codecs
 	if codecs == nil {
@@ -347,15 +297,8 @@ func (w *bindWalker) applyFormatDecode(v Value, format string) (Value, error) {
 	return NewValue(decoded), nil
 }
 
-// applyPostBind handles tag side effects that should run only AFTER
-// the field has been successfully decoded and assigned. Currently
-// just `unset`, which clears the explicit-layer value to support
-// the "one-shot secret from env" pattern.
-//
-// A best-effort Unset error is logged via the registry's logger
-// rather than surfaced — the bind itself succeeded, so a follow-up
-// rebuild rejection on the Unset is a diagnostic concern, not a
-// bind failure.
+// applyPostBind runs `unset` after a successful field bind. The Unset
+// error is logged but not returned: the bind itself succeeded.
 func (w *bindWalker) applyPostBind(path Path, tag FieldTag) {
 	if tag.Unset {
 		if err := w.registry.Unset(path.String()); err != nil {
@@ -365,16 +308,10 @@ func (w *bindWalker) applyPostBind(path Path, tag FieldTag) {
 	}
 }
 
-// lookup resolves a path through the registry's snapshot. When the
-// tag pins a specific source (via `source=<name>`), the value MUST
-// come from that source — a hit from another source is reported as
-// "not found" so the field falls through to default / required logic.
+// lookup resolves path against the snapshot, falling back through
+// tag.Aliases. When the tag pins a source, hits from any other source
+// are rejected so the field falls through to default / required logic.
 func (w *bindWalker) lookup(path Path, tag FieldTag) (Value, bool) {
-	// path is already the absolute canonical path — the walker built
-	// it from the registry's prefix plus the per-field segments.
-	// Look up directly against the snapshot so the registry's
-	// own prefix-prepending GetPath wrapper doesn't double the
-	// sub-view prefix.
 	v, ok := w.lookupSnapshot(path)
 	if !ok {
 		for _, alias := range tag.Aliases {
@@ -391,11 +328,9 @@ func (w *bindWalker) lookup(path Path, tag FieldTag) (Value, bool) {
 	return v, true
 }
 
-// lookupSnapshot reads the current snapshot directly, bypassing the
-// registry's prefix-prepending [Registry.Get] / [Registry.GetPath]
-// wrappers. The bind walker passes absolute paths (already
-// prepended with the registry's prefix) so consulting GetPath
-// would double the prefix on Sub-view binds.
+// lookupSnapshot reads the snapshot directly. The walker passes
+// already-prefixed absolute paths, so bypassing [Registry.GetPath]
+// avoids double-prefixing on Sub-view binds.
 func (w *bindWalker) lookupSnapshot(path Path) (Value, bool) {
 	snap := w.registry.state.snapshot.Load()
 	if snap == nil {
@@ -404,13 +339,10 @@ func (w *bindWalker) lookupSnapshot(path Path) (Value, bool) {
 	return snap.Get(path)
 }
 
-// pathFor computes the canonical Path the leaf binder uses. The
-// precedence is: explicit `path=` tag option > tag Name (transformed
-// per the field's `transform=` option) > Go field name (snake-cased).
-//
-// A tag.Name that contains the path delimiter is parsed as a path,
-// so `recon:"db.dsn"` resolves the canonical "db.dsn" key rather
-// than treating "db.dsn" as a single bracket-escaped segment.
+// pathFor computes the canonical Path the leaf binder uses. Precedence:
+// explicit `path=` > tag.Name (transformed) > Go field name
+// (snake-cased). A tag.Name containing the delimiter is parsed as a
+// path so `recon:"db.dsn"` works.
 func (w *bindWalker) pathFor(prefix Path, sf reflect.StructField, tag FieldTag) Path {
 	if tag.Path != "" {
 		return ParsePath(tag.Path)
@@ -419,10 +351,9 @@ func (w *bindWalker) pathFor(prefix Path, sf reflect.StructField, tag FieldTag) 
 	return prefix.Append(segments...)
 }
 
-// segmentsFor returns the path segments representing this field. With
-// `transform=` set, each segment is re-spelled (snake / kebab / etc.).
-// A tag Name containing the path delimiter splits into multiple
-// segments — the common "server.port" idiom Just Works.
+// segmentsFor returns the path segments representing sf. With
+// `transform=` set, each segment is re-spelled. A delimited tag.Name
+// splits into multiple segments.
 func (w *bindWalker) segmentsFor(sf reflect.StructField, tag FieldTag) []string {
 	name := tag.Name
 	if name == "" {
@@ -439,9 +370,8 @@ func (w *bindWalker) segmentsFor(sf reflect.StructField, tag FieldTag) []string 
 	return out
 }
 
-// applyTransform rewrites segment per the named transform. An unknown
-// or empty transform returns segment unchanged; the parser at field-
-// tag time already validated the option value if recon cares.
+// applyTransform rewrites segment per the named transform. Unknown
+// names return segment unchanged.
 func applyTransform(segment, transform string) string {
 	switch transform {
 	case "snake":
@@ -459,8 +389,7 @@ func applyTransform(segment, transform string) string {
 	}
 }
 
-// toSnakeCase rewrites GoFieldName / goFieldName as go_field_name.
-// Used by the snake transform and as a stepping-stone for kebab.
+// toSnakeCase rewrites GoFieldName as go_field_name.
 func toSnakeCase(s string) string {
 	var b strings.Builder
 	for i, r := range s {
@@ -475,9 +404,7 @@ func toSnakeCase(s string) string {
 	return b.String()
 }
 
-// toCamelCase rewrites snake_case_input → snakeCaseInput. Useful when
-// a config file uses snake-case keys but the Go struct exposes camel
-// case (a common config-file → struct path).
+// toCamelCase rewrites snake_case as snakeCase.
 func toCamelCase(s string) string {
 	parts := strings.Split(s, "_")
 	if len(parts) <= 1 {
@@ -495,9 +422,9 @@ func toCamelCase(s string) string {
 	return b.String()
 }
 
-// tagFor extracts the FieldTag for sf, consulting the primary tag
-// (cfg.tagName) first and falling back through the
-// recon → env → json → yaml → toml chain.
+// tagFor extracts the [FieldTag] for sf, consulting the primary tag
+// first and falling back through env / json / yaml / toml. Untagged
+// fields synthesize a tag from the snake_case Go field name.
 func (w *bindWalker) tagFor(sf reflect.StructField) FieldTag {
 	primary := w.opts.tagName
 	if raw, ok := sf.Tag.Lookup(primary); ok && raw != "" {
@@ -511,15 +438,11 @@ func (w *bindWalker) tagFor(sf reflect.StructField) FieldTag {
 			return ParseTag(raw)
 		}
 	}
-	// No tag at all: synthesize a tag from the Go field name in
-	// snake_case form. "ServerPort" → "server_port" — matches the
-	// shape file-format keys conventionally take.
 	return FieldTag{Name: toSnakeCase(sf.Name)}
 }
 
 // shouldShortCircuit reports whether the walker should stop after the
-// most recent appendErr. Honors FailFast vs FailCollect from the
-// merged decode options.
+// most recent error. Honors [FailFast] vs [FailCollect].
 func (w *bindWalker) shouldShortCircuit() bool {
 	if w.opts.errorBehavior == nil {
 		return false
@@ -530,8 +453,6 @@ func (w *bindWalker) shouldShortCircuit() bool {
 	return len(w.errs.Errors) > 0
 }
 
-// appendErr records err. Empty-error appends are dropped silently to
-// keep the per-field logic readable at the call site.
 func (w *bindWalker) appendErr(err error) {
 	if err == nil {
 		return
@@ -540,9 +461,8 @@ func (w *bindWalker) appendErr(err error) {
 }
 
 // runValidatorHooks invokes the optional [Validator] /
-// [ValidatorContext] interface implemented by the bind target. Both
-// hooks aggregate into the same MultiError so a single Bind reports
-// every problem in one pass.
+// [ValidatorContext] interface on the bind target. Hook errors join
+// the same MultiError as field errors.
 func (w *bindWalker) runValidatorHooks(ctx context.Context, target any) {
 	if w.shouldShortCircuit() {
 		return
@@ -560,21 +480,12 @@ func (w *bindWalker) runValidatorHooks(ctx context.Context, target any) {
 	}
 }
 
-// isWalkableStructValue reports whether fv is a struct (or pointer to
-// one) the bind walker should recurse into rather than coerce. The
-// "leaf" cases the walker must NOT recurse into:
-//
-//   - time.Time — handled by coerceTime;
-//   - any type implementing recon's [Unmarshaler], stdlib
-//     encoding.TextUnmarshaler, or env.Secret's UnmarshalEnv hook.
-//
-// Pointer-to-struct fields are tested via their (allocated, if nil)
-// element so the leaf-vs-walk decision sees the actual struct type.
+// isWalkableStructValue reports whether fv should be recursed into
+// rather than coerced. Leaf cases (must not recurse): time.Time, and
+// any type implementing [Unmarshaler], UnmarshalEnv, or
+// encoding.TextUnmarshaler.
 func isWalkableStructValue(fv reflect.Value) bool {
 	if fv.Kind() == reflect.Pointer {
-		// nil pointer: peek at the element type. If it's a struct AND
-		// the addressable form doesn't implement any unmarshal hook,
-		// the walker will allocate and recurse.
 		if fv.Type().Elem().Kind() != reflect.Struct {
 			return false
 		}
@@ -599,10 +510,9 @@ func isWalkableStructValue(fv reflect.Value) bool {
 	return true
 }
 
-// implementsUnmarshalHook reports whether v's dynamic type satisfies
-// any of recon's leaf-coercion hooks. Centralized so
-// [isWalkableStructValue] and [tryUnmarshalerHooks] use exactly the
-// same predicate.
+// implementsUnmarshalHook reports whether v satisfies any of recon's
+// leaf-coercion hooks. Used by both [isWalkableStructValue] and
+// [tryUnmarshalerHooks] so they agree.
 func implementsUnmarshalHook(v any) bool {
 	if _, ok := v.(Unmarshaler); ok {
 		return true
@@ -620,10 +530,9 @@ func implementsUnmarshalHook(v any) bool {
 	return false
 }
 
-// assignCustomDecoded copies the value returned by a WithCustomDecoder
-// callback into the target field. The callback's return type must be
-// assignable to fv's type — typically the same type T the callback's
-// signature declares.
+// assignCustomDecoded sets fv to the value a [WithCustomDecoder]
+// callback returned. The callback's return type must be assignable to
+// fv's type.
 func assignCustomDecoded(fv reflect.Value, out any) error {
 	rv := reflect.ValueOf(out)
 	if !rv.IsValid() {

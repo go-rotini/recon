@@ -6,29 +6,18 @@ import (
 	"strings"
 )
 
-// FormatError renders err into a multi-line, human-readable summary
-// suitable for direct printing to a terminal. Each entry in a
-// [*MultiError] becomes its own line; typed errors that carry a
-// [Path] (e.g., [*MissingRequiredError], [*EmptyValueError],
-// [*CoercionError], [*ValidationError], [*ImmutableChangedError])
-// are formatted with their path leading and any source-provenance
-// information trailing in parentheses.
+// FormatError renders err into a multi-line, human-readable summary.
+// Entries in a [*MultiError] become separate lines; typed errors that
+// carry a [Path] are formatted with their path leading and
+// source-provenance trailing in parentheses.
 //
 // reg is optional. When non-nil, FormatError consults its current
 // snapshot to surface the precedence chain alongside each failing
-// path — handy for "the value came from this source AND was rejected
-// at validation time". Pass nil when the registry is unavailable
-// (e.g., when New itself failed) — the rendering still works, just
-// without the extra context.
-//
-// FormatError returns "" when err is nil so it composes cleanly with
+// path. Returns "" when err is nil so it composes cleanly with
 // log.Println.
 //
-// Optional color: pass a single true to opt into ANSI-colorized
-// output (red error markers, dim path prefixes). The default is
-// uncolored so the output is safe for log files / non-terminal
-// consumers. Callers that always want color can use
-// [FormatErrorColor].
+// Pass color=true to opt into ANSI colorization. Callers that always
+// want color can use [FormatErrorColor].
 func FormatError(reg *Registry, err error, color ...bool) string {
 	if err == nil {
 		return ""
@@ -52,16 +41,11 @@ func FormatError(reg *Registry, err error, color ...bool) string {
 	return applyColor("recon:", wantColor, ansiRed) + " " + formatOneError(reg, err)
 }
 
-// FormatErrorColor is a sugar wrapper for [FormatError] with ANSI
-// colorization always on. Intended for `myapp config validate`
-// CLI subcommands that write to a TTY.
+// FormatErrorColor is [FormatError] with ANSI colorization always on.
 func FormatErrorColor(reg *Registry, err error) string {
 	return FormatError(reg, err, true)
 }
 
-// applyColor wraps s in the supplied ANSI code when enabled is
-// true; otherwise returns s untouched. The single-allocation path
-// keeps the no-color hot path fast.
 func applyColor(s string, enabled bool, code string) string {
 	if !enabled {
 		return s
@@ -69,8 +53,6 @@ func applyColor(s string, enabled bool, code string) string {
 	return code + s + ansiReset
 }
 
-// ANSI sequence constants. Kept centralized so future style tweaks
-// (different reds, blue paths, etc.) live in one place.
 const (
 	ansiReset = "\x1b[0m"
 	ansiBold  = "\x1b[1m"
@@ -78,8 +60,8 @@ const (
 )
 
 // formatOneError formats a single error. Typed errors that carry a
-// Path or Source field get extra context; everything else falls
-// back to err.Error().
+// Path or Source field get extra context; others fall back to
+// err.Error().
 func formatOneError(reg *Registry, err error) string {
 	var (
 		mreq  *MissingRequiredError
@@ -124,10 +106,8 @@ func formatOneError(reg *Registry, err error) string {
 	}
 }
 
-// formatPathErr is the shared shape for typed errors that carry a
-// Path. The trailing "(from source X)" annotation lands when the
-// error itself names a source and / or when the registry knows of
-// other sources holding the same key.
+// formatPathErr formats a typed error with its path leading and any
+// source-provenance trailing.
 func formatPathErr(reg *Registry, path Path, msg, source string) string {
 	out := path.String() + ": " + msg
 	annotation := buildProvenance(reg, path, source)
@@ -137,10 +117,9 @@ func formatPathErr(reg *Registry, path Path, msg, source string) string {
 	return out
 }
 
-// buildProvenance returns the "(from … sources: …)" trailing
-// annotation. When source is non-empty it leads; when the registry
-// is available the full SourceFor chain rides along so the operator
-// sees both the winning source and the shadowed ones.
+// buildProvenance returns the trailing "(from … sources: …)"
+// annotation. The error's own Source leads; when reg is available the
+// full SourceFor chain rides along.
 func buildProvenance(reg *Registry, path Path, source string) string {
 	var parts []string
 	if source != "" {
@@ -159,8 +138,6 @@ func buildProvenance(reg *Registry, path Path, source string) string {
 	return "(" + strings.Join(parts, "; ") + ")"
 }
 
-// formatSourceList renders a source-chain slice as "[a, b, c]"
-// without the bracket noise reflect-style formatting would emit.
 func formatSourceList(srcs []string) string {
 	quoted := make([]string, len(srcs))
 	for i, s := range srcs {
@@ -169,6 +146,4 @@ func formatSourceList(srcs []string) string {
 	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
-// quote wraps s in double quotes. Used by [formatSourceList] and
-// [buildProvenance] for consistent output styling.
 func quote(s string) string { return `"` + s + `"` }

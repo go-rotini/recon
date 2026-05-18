@@ -9,28 +9,16 @@ import (
 	rotinifs "github.com/go-rotini/fs"
 )
 
-// FSWatcher is the [WatcherFactory] backed by go-rotini/fs.Watcher. It
-// constructs one [rotinifs.Watcher] per Watch call, subscribes to it
-// under ctx, and forwards every [rotinifs.WatchEvent] as a recon
-// [SourceChange] on the returned channel. The fs.Watcher's atomic-rename
-// handling, parent-directory observation, and debouncing all carry
-// through transparently — recon adds no extra event processing of its
-// own.
-//
-// FSWatcher is the default factory installed by [New] when the caller
-// does not pass [WithWatcher]. Construct via [NewFSWatcher]; the zero
-// value is intentionally unusable so future configuration knobs can be
-// added without breaking compatibility.
+// FSWatcher is the [WatcherFactory] backed by [rotinifs.Watcher]. It is
+// the default factory installed by [New]. The zero value is unusable;
+// construct via [NewFSWatcher].
 type FSWatcher struct {
 	debounce time.Duration
 	poll     time.Duration
 	logger   *slog.Logger
 }
 
-// NewFSWatcher constructs an [FSWatcher]. The defaults (no extra
-// debounce, no poll override) match what most callers want; tune the
-// debounce window when a flaky filesystem fires multiple notifications
-// per logical save.
+// NewFSWatcher returns an [FSWatcher] configured by opts.
 func NewFSWatcher(opts ...FSWatcherOption) *FSWatcher {
 	w := &FSWatcher{}
 	for _, opt := range opts {
@@ -39,36 +27,30 @@ func NewFSWatcher(opts ...FSWatcherOption) *FSWatcher {
 	return w
 }
 
-// FSWatcherOption configures an [FSWatcher] at construction.
+// FSWatcherOption configures an [FSWatcher].
 type FSWatcherOption func(*FSWatcher)
 
-// WithFSWatcherDebounce sets the per-path debounce window. The underlying
-// fs.Watcher already debounces; this option tunes its window.
+// WithFSWatcherDebounce sets the per-path debounce window applied by the
+// underlying fs.Watcher.
 func WithFSWatcherDebounce(d time.Duration) FSWatcherOption {
 	return func(w *FSWatcher) { w.debounce = d }
 }
 
 // WithFSWatcherPollInterval forces the fs.Watcher's polling backend at
-// the supplied interval. Use to keep the cadence predictable on tests
-// or on filesystems where the kernel notification path is unreliable.
+// the supplied interval — useful when kernel notifications are
+// unreliable or test timing must stay predictable.
 func WithFSWatcherPollInterval(d time.Duration) FSWatcherOption {
 	return func(w *FSWatcher) { w.poll = d }
 }
 
-// WithFSWatcherLogger threads a logger into the fs.Watcher. Useful for
-// surfacing diagnostic output (subscription drops, backend selection)
-// alongside the registry's own logger.
+// WithFSWatcherLogger threads a logger into the underlying fs.Watcher.
 func WithFSWatcherLogger(l *slog.Logger) FSWatcherOption {
 	return func(w *FSWatcher) { w.logger = l }
 }
 
 // Watch implements [WatcherFactory]. The returned channel emits a
-// [SourceChange] for every fs.WatchEvent observed on path until ctx is
-// canceled — at which point Watch closes the channel and stops its
-// internal goroutine. Errors emitted by the fs.Watcher surface as
-// SourceChange entries with a non-nil Err and an empty Keys slice (the
-// registry's reload engine treats them as "refresh failed; previous
-// snapshot retained").
+// [SourceChange] for every observed fs event until ctx is canceled.
+// Errors surface as a SourceChange with non-nil Err.
 func (w *FSWatcher) Watch(ctx context.Context, path string) (<-chan SourceChange, error) {
 	if path == "" {
 		return nil, fmt.Errorf("%w: FSWatcher.Watch: empty path", ErrInvalidPath)
@@ -83,9 +65,8 @@ func (w *FSWatcher) Watch(ctx context.Context, path string) (<-chan SourceChange
 	if w.logger != nil {
 		wopts = append(wopts, rotinifs.WithLogger(w.logger))
 	}
-	// NewLazyWatcher tolerates a path that does not yet exist — important
-	// for the optional-file pattern (start watching `.env.local` even
-	// when the user hasn't created it yet).
+	// NewLazyWatcher tolerates a path that does not yet exist, which
+	// matches the optional-file pattern (e.g. `.env.local`).
 	rw, err := rotinifs.NewLazyWatcher(path, wopts...)
 	if err != nil {
 		return nil, fmt.Errorf("recon: FSWatcher.Watch %q: %w", path, err)
@@ -101,14 +82,9 @@ func (w *FSWatcher) Watch(ctx context.Context, path string) (<-chan SourceChange
 	return out, nil
 }
 
-// fanFSEvents forwards every fs.WatchEvent to the recon SourceChange
-// channel until ctx is canceled or the subscription closes. Runs as the
-// goroutine kicked off by [FSWatcher.Watch].
-//
-// An empty Keys slice on the emitted SourceChange tells the reload
-// engine "the source's content may have changed — re-read everything";
-// recon doesn't try to compute a per-key delta here (the fs notification
-// only addresses files, not keys).
+// fanFSEvents forwards fs events to the SourceChange channel. The
+// emitted change has an empty Keys slice — the registry's engine
+// re-reads the source rather than computing a per-key delta.
 func fanFSEvents(
 	ctx context.Context,
 	rw *rotinifs.Watcher,
@@ -123,18 +99,12 @@ func fanFSEvents(
 		select {
 		case <-ctx.Done():
 			return
-		case ev, ok := <-sub:
+		case _, ok := <-sub:
 			if !ok {
 				return
 			}
 			select {
 			case out <- SourceChange{}:
-				// fs.WatchEvent has no error field; backend health
-				// shows up through subscription closure or by the
-				// returned WatchEvent's Op being zero. Both surface
-				// as the same "refresh hint" — the reload engine
-				// re-reads on its own.
-				_ = ev
 			case <-ctx.Done():
 				return
 			}

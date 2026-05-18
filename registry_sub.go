@@ -1,20 +1,16 @@
 package recon
 
 // Sub returns a [Registry] view rooted at prefix. Reads, writes, and
-// introspection on the returned registry operate on keys *relative* to
-// prefix — Sub("server").Get("port") resolves the parent's "server.port",
-// Sub("server").Set("port", 9000) writes the parent's "server.port", and
-// Sub("server").AllKeys() lists every "server.*" key with the prefix
-// stripped.
+// introspection on the returned registry operate on keys relative to
+// prefix.
 //
-// Sub views share state with the parent — there is no snapshot copy, no
-// source duplication, no separate mutex. A reload on the parent is visible
-// to the sub immediately, and any sub-side mutation (Set, SetDefault,
-// RegisterAlias) is visible to the parent. Closing the parent invalidates
-// every sub view derived from it.
+// Sub views share state with the parent: no snapshot copy, no source
+// duplication. A reload on the parent is visible to the sub
+// immediately and vice versa. Closing the parent invalidates every
+// sub view.
 //
-// Sub("") returns the parent unchanged. Repeated Sub calls concatenate:
-// Sub("a").Sub("b") is equivalent to Sub("a.b").
+// Sub("") returns the parent unchanged. Sub("a").Sub("b") is
+// equivalent to Sub("a.b").
 func (r *Registry) Sub(prefix string) *Registry {
 	parsed := ParsePath(prefix)
 	if len(parsed) == 0 {
@@ -26,19 +22,12 @@ func (r *Registry) Sub(prefix string) *Registry {
 	}
 }
 
-// Prefix returns the sub-tree path this registry view is rooted at. The
-// returned [Path] is empty for a root registry. Useful for diagnostic
-// output and for callers that need to reconstruct fully-qualified keys
-// from a sub view.
+// Prefix returns the sub-tree path this view is rooted at, or an
+// empty Path for a root registry.
 func (r *Registry) Prefix() Path { return r.prefix.Clone() }
 
-// fullKey returns the parent-relative path string for a key supplied to a
-// sub-view's Get / Set / IsSet call. For a root registry the supplied key
-// is canonicalised through ParsePath; for a sub view r.prefix is prepended.
-//
-// Centralized so every read/write method consults the same logic and so
-// adding behavior (case-folding, key normalisation) only needs one place
-// to change.
+// fullKey resolves a sub-view key to its parent-relative canonical
+// path string.
 func (r *Registry) fullKey(key string) string {
 	parsed := ParsePath(key)
 	if len(r.prefix) == 0 {

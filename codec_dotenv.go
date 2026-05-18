@@ -6,24 +6,19 @@ import (
 	"github.com/go-rotini/dotenv"
 )
 
-// dotenvCodec wraps go-rotini/dotenv. Unlike the other bundled codecs,
-// dotenv is a *flat* key-value format — `.env` files only express scalar
-// strings, never nested maps or arrays. The codec produces a single-
-// level map[string]any (with string values) and rejects nested input on
-// encode.
+// dotenvCodec wraps go-rotini/dotenv. Dotenv is a flat key-value
+// format — no nesting — so Decode produces a single-level map and
+// Encode rejects nested input.
 type dotenvCodec struct{}
 
-// Dotenv is the package-level [Codec] for `.env` files. Registered by
-// [New] in the default codec set.
+// Dotenv is the [Codec] for `.env` files. Registered in the default
+// codec set by [New].
 var Dotenv Codec = dotenvCodec{}
 
 func (dotenvCodec) Name() string         { return FormatDotenv }
 func (dotenvCodec) Extensions() []string { return []string{".env"} }
 
-// Decode parses data as a `.env` document into a single-level
-// map[string]any whose values are strings. Variable expansion is left to
-// the dotenv parser's defaults; surrounding shells expand vars at process
-// launch, so post-load expansion is rarely the desired behavior.
+// Decode parses data as a `.env` document. Values are strings.
 func (dotenvCodec) Decode(data []byte) (map[string]any, error) {
 	if len(data) == 0 {
 		return map[string]any{}, nil
@@ -40,10 +35,8 @@ func (dotenvCodec) Decode(data []byte) (map[string]any, error) {
 	return out, nil
 }
 
-// Encode serializes a flat map[string]any as a `.env` document. Every
-// value is coerced to string via fmt.Sprint; nested maps or slices are
-// rejected with a wrapped [ErrUnsupportedFormat] because the `.env`
-// grammar has no representation for them.
+// Encode serializes a flat map as a `.env` document. Nested values
+// are rejected with wrapped [ErrUnsupportedFormat].
 func (dotenvCodec) Encode(v map[string]any) ([]byte, error) {
 	flat := make(map[string]string, len(v))
 	for k, val := range v {
