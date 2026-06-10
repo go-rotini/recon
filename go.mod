@@ -1,6 +1,6 @@
 module github.com/go-rotini/recon
 
-go 1.26.2
+go 1.26
 
 toolchain go1.26.3
 
@@ -11,7 +11,15 @@ tool (
 	golang.org/x/vuln/cmd/govulncheck
 )
 
-require github.com/go-rotini/env v1.0.0
+require (
+	github.com/go-rotini/dotenv v1.0.0
+	github.com/go-rotini/env v1.0.0
+	github.com/go-rotini/fs v1.1.0
+	github.com/go-rotini/jsonc v1.1.0
+	github.com/go-rotini/jsonschema v1.1.0
+	github.com/go-rotini/toml v1.1.0
+	github.com/go-rotini/yaml v1.2.0
+)
 
 require (
 	4d63.com/gocheckcompilerdirectives v1.3.0 // indirect
@@ -83,12 +91,6 @@ require (
 	github.com/go-critic/go-critic v0.14.3 // indirect
 	github.com/go-gremlins/gremlins v0.6.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
-	github.com/go-rotini/dotenv v1.0.0 // indirect
-	github.com/go-rotini/fs v1.0.0 // indirect
-	github.com/go-rotini/jsonc v1.1.0 // indirect
-	github.com/go-rotini/jsonschema v1.0.0 // indirect
-	github.com/go-rotini/toml v1.1.0 // indirect
-	github.com/go-rotini/yaml v1.2.0 // indirect
 	github.com/go-toolsmith/astcast v1.1.0 // indirect
 	github.com/go-toolsmith/astcopy v1.1.0 // indirect
 	github.com/go-toolsmith/astequal v1.2.0 // indirect
@@ -230,7 +232,7 @@ require (
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260421165255-392afab6f40e // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/tools v0.44.0 // indirect
