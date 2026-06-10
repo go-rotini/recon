@@ -188,8 +188,6 @@ github.com/firefart/nonamedreturns v1.0.6 h1:vmiBcKV/3EqKY3ZiPxCINmpS431OcE1S47A
 github.com/firefart/nonamedreturns v1.0.6/go.mod h1:R8NisJnSIpvPWheCq0mNRXJok6D8h7fagJTF8EMEwCo=
 github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=
 github.com/frankban/quicktest v1.14.6/go.mod h1:4ptaffx2x8+WTWXmUCuVU6aPUX1/Mz7zb5vbUoiM6w0=
-github.com/fsnotify/fsnotify v1.9.0 h1:2Ml+OJNzbYCTzsxtv8vKSFD9PbJjmhYF14k/jKC7S9k=
-github.com/fsnotify/fsnotify v1.9.0/go.mod h1:8jBTzvmWwFyi3Pb8djgCCO5IBqzKJ/Jwo8TRcHyHii0=
 github.com/fsnotify/fsnotify v1.10.1 h1:b0/UzAf9yR5rhf3RPm9gf3ehBPpf0oZKIjtpKrx59Ho=
 github.com/fsnotify/fsnotify v1.10.1/go.mod h1:TLheqan6HD6GBK6PrDWyDPBaEV8LspOxvPSjC+bVfgo=
 github.com/fzipp/gocyclo v0.6.0 h1:lsblElZG7d3ALtGMx9fmxeTKZaLLpU8mET09yN4BBLo=
@@ -218,12 +216,12 @@ github.com/go-rotini/dotenv v1.0.0 h1:jySZEA4IApVOkCWrbvX31vOezCrRQCiBDZ3AuARtUr
 github.com/go-rotini/dotenv v1.0.0/go.mod h1:lzvJ5M984uytSVGBaZlUZA0o0lhPAY+ImsT/Mh0gHDI=
 github.com/go-rotini/env v1.0.0 h1:32FNaCEOr71BrgTPnZJP1fBNCHKlZ6SbRM7BaEo52ug=
 github.com/go-rotini/env v1.0.0/go.mod h1:NTvgcIaYoaMIu9M26PwNSESzCd6iQ2OY3P0VbzqgJ68=
-github.com/go-rotini/fs v1.0.0 h1:jT2tzpXMpJ2wsJAQk5ZjQCwxd2/VJoxcrHdjsGS3ZpU=
-github.com/go-rotini/fs v1.0.0/go.mod h1:rsFsPqzCsRfDkJuPCbv5158j5qgwB6MdJiUpx3k2Qqk=
+github.com/go-rotini/fs v1.1.0 h1:J7l6hKgWEJYRTX58cwfZtPNxVslsTemkZHRBtJl+Dsk=
+github.com/go-rotini/fs v1.1.0/go.mod h1:luW0uGI4/AEorTH2DZ65APNwgBFA79lONs+PxIOv1cc=
 github.com/go-rotini/jsonc v1.1.0 h1:rH+QF/pRorrNBqSPUI0L5SHi9pGXor48b5TuTdvVie0=
 github.com/go-rotini/jsonc v1.1.0/go.mod h1:PG7X1If13RRskZfLk8IM0r1RuQwj0q7BLvsXXmoO1n0=
-github.com/go-rotini/jsonschema v1.0.0 h1:tMM2+A7CaU7BsK4vncfHbhzHhupUUb5QPMZ8h8F4cCY=
-github.com/go-rotini/jsonschema v1.0.0/go.mod h1:rU+aFHZy6XlGeiHxfgv/OedlUU5CbFaB1j/wKlq+vTQ=
+github.com/go-rotini/jsonschema v1.1.0 h1:lEBKwC2lQsPDcImRvQBXH3a7tfQwcdggHf0qcA2U3uE=
+github.com/go-rotini/jsonschema v1.1.0/go.mod h1:clLhg3v0C4HPav1Sh03AdNOeQhktQRTC74lFbqfqFKA=
 github.com/go-rotini/toml v1.1.0 h1:zZ0ZSu/IphjnAZ88IxbecI2Jy1dW+SuzjPlEHF6Vg4I=
 github.com/go-rotini/toml v1.1.0/go.mod h1:P7vQl8xZqhGc6wmkGkySHYsWMQmGysF095fSrMQXd2w=
 github.com/go-rotini/yaml v1.2.0 h1:PdhDsvMlecQZmUea2H6e1agjgaMhI1pB9Md6Wit35To=
@@ -833,8 +831,8 @@ golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a/go.mod h1:oPkhp1MJrh7nUepCBc
 golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
 golang.org/x/sys v0.5.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
 golang.org/x/sys v0.6.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
-golang.org/x/sys v0.43.0 h1:Rlag2XtaFTxp19wS8MXlJwTvoh8ArU6ezoyFsMyCTNI=
-golang.org/x/sys v0.43.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
+golang.org/x/sys v0.46.0 h1:noSf2Fq6F8DBgS+LysIkx7rIExoNHJsxOAtPp4rthXw=
+golang.org/x/sys v0.46.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
 golang.org/x/telemetry v0.0.0-20260421165255-392afab6f40e h1:OXgN37M6hqjaAvb7CJK9vJ+7Z/6lvIm5bXho5poo/Wk=
 golang.org/x/telemetry v0.0.0-20260421165255-392afab6f40e/go.mod h1:kHjTxDEnAu6/Nl9lDkzjWpR+bmKfxeiRuSDlsMb70gE=
 golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1/go.mod h1:bj7SfCRtBDWHUb9snDiAeCFNEtKQo2Wmx5Cou7ajbmo=
