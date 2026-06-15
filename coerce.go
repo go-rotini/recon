@@ -58,9 +58,48 @@ func coerce(v Value, dest reflect.Value, tag FieldTag) error {
 		return coerceMap(v, dest, tag)
 	case reflect.Struct:
 		return coerceStruct(v, dest, tag)
+	case reflect.Interface:
+		return coerceInterface(v, dest)
 	default:
 		return fmt.Errorf("%w: cannot coerce %s into %s",
 			ErrTypeMismatch, v.Kind(), dest.Type())
+	}
+}
+
+// coerceInterface assigns v to an empty-interface dest — an `any` field, or a
+// map[string]any / []any element. MapKind / SliceKind values recurse into
+// nested map[string]any / []any (so a whole subtree binds), and scalars take
+// their natural Go form. A non-empty interface dest is unsupported.
+func coerceInterface(v Value, dest reflect.Value) error {
+	if dest.NumMethod() != 0 {
+		return fmt.Errorf("%w: cannot coerce %s into %s",
+			ErrTypeMismatch, v.Kind(), dest.Type())
+	}
+	switch v.Kind() {
+	case MapKind:
+		m := map[string]any{}
+		mv := reflect.ValueOf(&m).Elem()
+		if err := coerceMap(v, mv, FieldTag{}); err != nil {
+			return err
+		}
+		dest.Set(mv)
+		return nil
+	case SliceKind:
+		var s []any
+		sv := reflect.ValueOf(&s).Elem()
+		if err := coerceSlice(v, sv, FieldTag{}); err != nil {
+			return err
+		}
+		dest.Set(sv)
+		return nil
+	default:
+		x := v.Any()
+		if x == nil {
+			dest.Set(reflect.Zero(dest.Type()))
+			return nil
+		}
+		dest.Set(reflect.ValueOf(x))
+		return nil
 	}
 }
 
