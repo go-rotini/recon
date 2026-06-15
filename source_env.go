@@ -42,8 +42,32 @@ func NewOSEnvSource(opts ...EnvOption) *OSEnvSource {
 	if parser == nil {
 		parser = func(name string) Path { return parseSnakeUpper(name, cfg.prefix) }
 	}
+	prefix := cfg.prefix
+	if len(cfg.vars) > 0 {
+		// Explicit variables are exempt from the prefix and need not start
+		// with it, so the collectKeys prefix filter must not drop them; the
+		// base transform/parser still enforce the prefix for non-pinned keys.
+		inverse := make(map[string]string, len(cfg.vars))
+		for key, name := range cfg.vars {
+			inverse[name] = key
+		}
+		baseTransform, baseParser := transform, parser
+		transform = func(p Path) string {
+			if name, ok := cfg.vars[p.String()]; ok {
+				return name
+			}
+			return baseTransform(p)
+		}
+		parser = func(name string) Path {
+			if key, ok := inverse[name]; ok {
+				return ParsePath(key)
+			}
+			return baseParser(name)
+		}
+		prefix = ""
+	}
 	return &OSEnvSource{
-		prefix:    cfg.prefix,
+		prefix:    prefix,
 		transform: transform,
 		parse:     parser,
 		src:       env.OSEnv(),

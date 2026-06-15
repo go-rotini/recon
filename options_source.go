@@ -1,6 +1,9 @@
 package recon
 
-import "time"
+import (
+	"maps"
+	"time"
+)
 
 // Per-source option types. Each source constructor declares its own
 // type so the compiler enforces "this option applies only to that
@@ -51,6 +54,7 @@ type (
 		prefix    string
 		transform KeyTransform
 		parser    func(name string) Path
+		vars      map[string]string
 	}
 
 	flagOptions struct {
@@ -145,6 +149,27 @@ func WithEnvKeyParser(fn func(name string) Path) EnvOption {
 		if fn != nil {
 			o.parser = fn
 		}
+	}
+}
+
+// WithEnvVars pins explicit environment-variable names for specific recon
+// paths, in both directions: a pinned path projects to exactly the given
+// variable name (exempt from any [WithEnvPrefix]) and that variable parses
+// back to the path during [OSEnvSource.Keys] enumeration. Non-pinned paths
+// keep the default snake-upper (prefix-aware) projection.
+//
+// vars maps a canonical recon path string (see [Path.String]) to a variable
+// name, e.g. {"token": "WIDGET_TOKEN"}. A nil or empty map is ignored.
+// Repeated calls merge.
+func WithEnvVars(vars map[string]string) EnvOption {
+	return func(o *envOptions) {
+		if len(vars) == 0 {
+			return
+		}
+		if o.vars == nil {
+			o.vars = make(map[string]string, len(vars))
+		}
+		maps.Copy(o.vars, vars)
 	}
 }
 

@@ -166,3 +166,45 @@ func TestOSEnvSource_IntegrationWithRegistry(t *testing.T) {
 		t.Fatalf("server.port kind=%v ok=%v, want StringKind", v.Kind(), ok)
 	}
 }
+
+// TestOSEnvSource_WithEnvVars verifies an explicitly pinned path reads its
+// exact variable (forward) and that variable enumerates back to the pinned
+// path rather than the snake-upper split (inverse).
+func TestOSEnvSource_WithEnvVars(t *testing.T) {
+	t.Setenv("WIDGET_TOKEN", "secret")
+	s := NewOSEnvSource(WithEnvVars(map[string]string{"token": "WIDGET_TOKEN"}))
+
+	v, ok, _ := s.Get(MakePath("token"))
+	if !ok {
+		t.Fatal("token not resolved through WIDGET_TOKEN")
+	}
+	if got, _ := v.AsString(); got != "secret" {
+		t.Fatalf("token=%q, want secret", got)
+	}
+	keys := s.Keys()
+	if !slices.ContainsFunc(keys, func(p Path) bool { return p.Equal(MakePath("token")) }) {
+		t.Fatalf("Keys()=%v, want it to contain [token]", keys)
+	}
+}
+
+// TestOSEnvSource_WithEnvVarsExemptFromPrefix verifies a pinned variable
+// resolves even when it does not match a configured prefix, while non-pinned
+// paths keep the prefix-aware default projection.
+func TestOSEnvSource_WithEnvVarsExemptFromPrefix(t *testing.T) {
+	t.Setenv("APP_PORT", "8080")    // prefixed → default projection
+	t.Setenv("WIDGET_TOKEN", "tok") // explicit, outside the APP_ prefix
+	s := NewOSEnvSource(
+		WithEnvPrefix("APP_"),
+		WithEnvVars(map[string]string{"token": "WIDGET_TOKEN"}),
+	)
+	if v, ok, _ := s.Get(MakePath("token")); !ok {
+		t.Fatal("explicit WIDGET_TOKEN should resolve under a prefix")
+	} else if got, _ := v.AsString(); got != "tok" {
+		t.Fatalf("token=%q, want tok", got)
+	}
+	if v, ok, _ := s.Get(MakePath("port")); !ok {
+		t.Fatal("APP_PORT should resolve as port")
+	} else if got, _ := v.AsString(); got != "8080" {
+		t.Fatalf("port=%q, want 8080", got)
+	}
+}
