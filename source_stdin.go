@@ -34,7 +34,7 @@ func NewStdinSource(format string, opts ...StdinOption) (Source, error) {
 	if len(data) > 0 {
 		decoded, err = codec.Decode(data)
 		if err != nil {
-			return nil, &ParseError{Source: "stdin", Cause: err}
+			return nil, newParseError("stdin", "", data, err)
 		}
 	}
 	return NewMapSource("stdin", decoded), nil

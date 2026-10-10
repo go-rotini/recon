@@ -16,6 +16,17 @@ type JSONSchemaValidator struct {
 // NewJSONSchemaValidator compiles schemaJSON and returns a validator
 // for [WithValidator]. Returns a wrapped [ErrSchemaInvalid] on
 // compile failure.
+//
+// The NewJSONSchemaValidator* constructors never touch the network: a
+// $ref resolves within the schema or to an embedded meta-schema, and a
+// remote https:// $ref fails to compile. To fetch remote refs, compile
+// with a loader and wrap the result:
+//
+//	s, err := jsonschema.Compile(schemaJSON, jsonschema.WithLoader(httploader.Default()))
+//	// handle err
+//	v := recon.NewJSONSchemaValidatorFromSchema(s)
+//
+// where httploader is github.com/go-rotini/jsonschema/httploader.
 func NewJSONSchemaValidator(schemaJSON []byte) (*JSONSchemaValidator, error) {
 	s, err := jsonschema.Compile(schemaJSON)
 	if err != nil {
@@ -53,7 +64,8 @@ func NewJSONSchemaValidatorJSONC(schemaJSONC []byte) (*JSONSchemaValidator, erro
 
 // NewJSONSchemaValidatorFromSchema wraps an already-compiled
 // jsonschema.Schema. Use when the caller assembled the schema with
-// custom CompileOptions (remote $ref loaders, draft pinning).
+// custom CompileOptions (a remote $ref loader such as
+// github.com/go-rotini/jsonschema/httploader, draft pinning).
 func NewJSONSchemaValidatorFromSchema(s *jsonschema.Schema) *JSONSchemaValidator {
 	return &JSONSchemaValidator{schema: s}
 }

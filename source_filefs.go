@@ -46,11 +46,12 @@ func NewFileSourceFS(name string, fsys fs.FS, path string, opts ...FileOption) (
 	if err != nil {
 		return nil, err
 	}
+	data = stripBOM(data)
 	decoded := map[string]any{}
 	if !missing && len(data) > 0 {
 		decoded, err = codec.Decode(data)
 		if err != nil {
-			return nil, &ParseError{Source: name, Cause: err}
+			return nil, newParseError(name, path, data, err)
 		}
 	}
 

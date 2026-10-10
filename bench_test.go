@@ -177,3 +177,35 @@ func BenchmarkSnapshotAsMap(b *testing.B) {
 		_ = snap.AsMap()
 	}
 }
+
+// BenchmarkOSEnvSource_Keys measures one scan of a 200-variable
+// environment, the cost a fresh env source pays on its first Keys call.
+func BenchmarkOSEnvSource_Keys(b *testing.B) {
+	for i := range 200 {
+		b.Setenv("BENCH_RECON_VAR_"+strconv.Itoa(i), "v")
+	}
+	for b.Loop() {
+		_ = NewOSEnvSource().Keys()
+	}
+}
+
+// BenchmarkNew_OneShot measures building and closing a registry with
+// one map source, with and without the watch engine.
+func BenchmarkNew_OneShot(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		opts []Option
+	}{
+		{"watched", nil},
+		{"WithoutWatch", []Option{WithoutWatch()}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				src := NewMapSource("m", map[string]any{"k": "v"})
+				r, _ := New(append([]Option{WithSource(src)}, tc.opts...)...)
+				_ = r.Close()
+			}
+		})
+	}
+}

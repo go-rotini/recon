@@ -21,6 +21,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26.x"
+          check-latest: true
 
       - name: Test
         run: make test
@@ -40,6 +41,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26.x"
+          check-latest: true
 
       - name: Acceptance
         run: make test-acceptance
@@ -52,6 +54,12 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26.x"
+          check-latest: true
+          # This job runs the development tools, which tools.mod pins separately from go.mod,
+          # so a tool bump has to change the cache key too.
+          cache-dependency-path: |
+            go.sum
+            tools.sum
 
       - name: Lint
         run: make lint
@@ -64,6 +72,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26.x"
+          check-latest: true
 
       - name: Fuzz smoke test
         run: make test-fuzz
@@ -76,6 +85,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26.x"
+          check-latest: true
 
       - name: Benchmarks
         run: make test-bench
@@ -97,6 +107,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26.x"
+          check-latest: true
 
       - name: Race detector
         run: make test-race

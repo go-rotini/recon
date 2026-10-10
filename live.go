@@ -34,9 +34,16 @@ type Live[T any] struct {
 // spawned. After that, Live subscribes to reg.Events() and re-binds
 // on each reload. opts is forwarded verbatim to every [Registry.Bind]
 // call.
+//
+// A registry that could never deliver a reload is refused with
+// [ErrNotWatched]: one built [WithoutWatch], or one holding a
+// [FileSource] with no [WatcherFactory] (see [WithWatcher]).
 func NewLive[T any](reg *Registry, opts ...DecodeOption) (*Live[T], error) {
 	if reg == nil {
 		return nil, fmt.Errorf("%w: NewLive: nil *Registry", ErrInvalidPath)
+	}
+	if err := reg.checkWatched(); err != nil {
+		return nil, err
 	}
 	decode := func() (*T, error) {
 		var out T
@@ -157,5 +164,24 @@ func (l *Live[T]) Reload(ctx context.Context) error {
 	}
 	l.curr.Store(next)
 	l.recordErr(nil)
+	return nil
+}
+
+// checkWatched returns [ErrNotWatched] when r cannot deliver reload
+// events: it has no watch engine, or a file source has no factory to
+// watch it with.
+func (r *Registry) checkWatched() error {
+	if r.state.watch == nil {
+		return fmt.Errorf("%w: it was built WithoutWatch", ErrNotWatched)
+	}
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	for _, src := range r.state.sources {
+		if fs, ok := src.(*FileSource); ok && fs.watcherFactory() == nil {
+			return fmt.Errorf("%w: file source %q has no watcher; "+
+				"pass recon.WithWatcher(fswatch.New()) from github.com/go-rotini/recon/fswatch, "+
+				"or recon.WithWatcher(recon.NewPollWatcher(interval))", ErrNotWatched, src.Name())
+		}
+	}
 	return nil
 }

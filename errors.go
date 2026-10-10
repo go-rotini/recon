@@ -71,6 +71,15 @@ var (
 	// ErrSchemaInvalid is returned when a supplied schema fails to
 	// compile.
 	ErrSchemaInvalid = errors.New("recon: schema invalid")
+
+	// ErrFileTooLarge is returned when a file read by a [FileSource] or
+	// a `fromFile` field exceeds [MaxFileSize].
+	ErrFileTooLarge = errors.New("recon: file size exceeds limit")
+
+	// ErrNotWatched is returned by [NewLive] when the registry cannot
+	// deliver reload events: it was built [WithoutWatch], or a file
+	// source has no [WatcherFactory].
+	ErrNotWatched = errors.New("recon: registry is not watched")
 )
 
 // Position is a source-local position used by [ParseError]. Line and
@@ -148,8 +157,7 @@ func (e *MissingRequiredError) Is(target error) bool {
 	if target == ErrMissingRequired {
 		return true
 	}
-	var other *MissingRequiredError
-	if errors.As(target, &other) {
+	if other, ok := errors.AsType[*MissingRequiredError](target); ok {
 		return e.Path.Equal(other.Path)
 	}
 	return false
@@ -169,8 +177,7 @@ func (e *EmptyValueError) Is(target error) bool {
 	if target == ErrEmptyValue {
 		return true
 	}
-	var other *EmptyValueError
-	if errors.As(target, &other) {
+	if other, ok := errors.AsType[*EmptyValueError](target); ok {
 		return e.Path.Equal(other.Path) && e.Source == other.Source
 	}
 	return false
@@ -242,8 +249,7 @@ func (e *ImmutableChangedError) Is(target error) bool {
 	if target == ErrImmutableChanged {
 		return true
 	}
-	var other *ImmutableChangedError
-	if errors.As(target, &other) {
+	if other, ok := errors.AsType[*ImmutableChangedError](target); ok {
 		return e.Path.Equal(other.Path)
 	}
 	return false
@@ -307,14 +313,30 @@ func (e *ValidationError) Is(target error) bool {
 }
 
 // ParseError reports that a source's underlying format parser failed.
+// Sources built from a bundled codec fill Position when the parser
+// reports one (see [ParsePosition]) and Msg with the parser's own
+// description, so callers can render file:line:col without inspecting
+// each format's error type.
 type ParseError struct {
 	Source   string
 	Path     string // file path for file sources; empty otherwise
 	Position Position
 	Cause    error
+	// Msg is the parser's description of the problem without the
+	// format's position prefix; empty means use Cause.
+	Msg string
 }
 
 func (e *ParseError) Error() string {
+	loc := e.location()
+	if loc == "" {
+		return "recon: parse: " + e.detail()
+	}
+	return fmt.Sprintf("recon: parse %s: %s", loc, e.detail())
+}
+
+// location renders "path:line:col", falling back to the source name.
+func (e *ParseError) location() string {
 	loc := e.Source
 	if e.Path != "" {
 		loc = e.Path
@@ -322,10 +344,15 @@ func (e *ParseError) Error() string {
 	if pos := e.Position.String(); pos != "" {
 		loc += ":" + pos
 	}
-	if loc == "" {
-		return fmt.Sprintf("recon: parse: %v", e.Cause)
+	return loc
+}
+
+// detail returns Msg, or the cause's text when Msg is empty.
+func (e *ParseError) detail() string {
+	if e.Msg != "" {
+		return e.Msg
 	}
-	return fmt.Sprintf("recon: parse %s: %v", loc, e.Cause)
+	return fmt.Sprint(e.Cause)
 }
 
 func (e *ParseError) Unwrap() error { return e.Cause }

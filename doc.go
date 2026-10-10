@@ -19,8 +19,10 @@
 //
 //   - No global state. Every operation is on an explicit [*Registry].
 //   - Generics-first: [Get], [Bind], [Live], [PerSourceFor].
-//   - Live by default. [Live] gives a typed atomic-snapshot view
-//     that re-binds on every successful reload.
+//   - Live on request. [Live] gives a typed atomic-snapshot view
+//     that re-binds on every successful reload; file sources reload
+//     once a [WatcherFactory] is installed with [WithWatcher] (see the
+//     fswatch subpackage). [WithoutWatch] builds a one-shot registry.
 //   - Open seams. [Codec], [SchemaValidator], [WatcherFactory],
 //     [FlagAdapter], [RemoteBackend], and [Source] are interfaces;
 //     one option replaces any default.

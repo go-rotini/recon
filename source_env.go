@@ -138,7 +138,13 @@ func (s *OSEnvSource) Refresh() int {
 // to a Path, and returns the sorted result. Caller must hold s.mu.
 func (s *OSEnvSource) collectKeys() []Path {
 	envvars := os.Environ()
-	out := make([]Path, 0, len(envvars))
+	// Sort on each path's string form, computed once per key rather than
+	// on every comparison.
+	type keyed struct {
+		path Path
+		key  string
+	}
+	found := make([]keyed, 0, len(envvars))
 	for _, kv := range envvars {
 		eq := strings.IndexByte(kv, '=')
 		if eq <= 0 {
@@ -152,17 +158,12 @@ func (s *OSEnvSource) collectKeys() []Path {
 		if len(p) == 0 {
 			continue
 		}
-		out = append(out, p)
+		found = append(found, keyed{path: p, key: p.String()})
 	}
-	slices.SortFunc(out, func(a, b Path) int {
-		switch {
-		case a.String() < b.String():
-			return -1
-		case a.String() > b.String():
-			return 1
-		default:
-			return 0
-		}
-	})
+	slices.SortFunc(found, func(a, b keyed) int { return strings.Compare(a.key, b.key) })
+	out := make([]Path, len(found))
+	for i, k := range found {
+		out[i] = k.path
+	}
 	return out
 }
