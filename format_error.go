@@ -96,11 +96,7 @@ func formatOneError(reg *Registry, err error) string {
 	case errors.As(err, &srcE):
 		return fmt.Sprintf("source %q %s: %v", srcE.Source, srcE.Op, srcE.Cause)
 	case errors.As(err, &parse):
-		loc := parse.Source
-		if parse.Path != "" {
-			loc = parse.Path
-		}
-		return fmt.Sprintf("parse %s: %v", loc, parse.Cause)
+		return fmt.Sprintf("parse %s: %s", parse.location(), parse.detail())
 	default:
 		return err.Error()
 	}

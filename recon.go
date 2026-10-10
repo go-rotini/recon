@@ -16,11 +16,3 @@ func installDefaultCodecs(opts *registryOptions) {
 		opts.codecs = DefaultCodecs()
 	}
 }
-
-// installDefaultWatcher installs [FSWatcher] when the caller did
-// not supply a [WatcherFactory].
-func installDefaultWatcher(opts *registryOptions) {
-	if opts.watcher == nil {
-		opts.watcher = NewFSWatcher()
-	}
-}

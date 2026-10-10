@@ -5,14 +5,12 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-
-	rotinifs "github.com/go-rotini/fs"
 )
 
 // readFromFile is the indirection used by `fromFile`-tagged field
-// reads. Defaults to [rotinifs.ReadFile] so [FileSource]'s size caps
-// apply; tests override the var to avoid touching disk.
-var readFromFile = rotinifs.ReadFile
+// reads. Defaults to [readFileCapped] so [FileSource]'s size cap
+// applies; tests override the var to avoid touching disk.
+var readFromFile = readFileCapped
 
 // bindWalker carries the state one [Registry.Bind] call needs as it
 // descends into nested structs. consulted is the set of paths the

@@ -6,7 +6,7 @@ This package is used as the default configuration and data-in package for [rotin
 
 ## Features
 
-- One-line setup: `recon.New(...)` wires the go-rotini family defaults — YAML / TOML / JSONC / JSON / Dotenv codecs, the [go-rotini/fs](https://github.com/go-rotini/fs)-backed file watcher, the [go-rotini/jsonschema](https://github.com/go-rotini/jsonschema)-backed validator — and you're loading config
+- One-line setup: `recon.New(...)` wires the go-rotini family defaults — YAML / TOML / JSONC / JSON / Dotenv codecs, the [go-rotini/jsonschema](https://github.com/go-rotini/jsonschema)-backed validator — and you're loading config; add `recon.WithWatcher(fswatch.New())` for live file reload
 - Generic, type-safe API: `Get[T]`, `Bind`, `Live[T]`, `PerSourceFor[T]`, `Configs` — typed values where the type is statically known
 - Pluggable seams: `Codec`, `SchemaValidator`, `WatcherFactory`, `FlagAdapter`, `RemoteBackend`, and `Source` itself — every default is replaceable behind its interface with a one-line option
 - Built-in sources: `NewOSEnvSource`, `NewFileSource` / `NewFileSourceFS`, `NewYAMLSource` / `NewTOMLSource` / `NewJSONCSource` / `NewJSONSource` / `NewDotenvSource` (format-named convenience), `NewBufferSource`, `NewMapSource`, `NewStdinSource`, `NewFlagSource`, `NewRemoteSource`
@@ -100,7 +100,18 @@ Per-key overrides are first-class: `RegisterAlias` makes one path resolve to ano
 
 ## Live reload
 
-`Live[T]` wraps the registry in an `atomic.Pointer[T]`-backed handle. Reads are O(1) and lock-free; readers always observe a complete, validated snapshot. Any source that implements `Watcher` participates; file-backed sources get watching from the registry's `WatcherFactory` (the bundled `FSWatcher` is backed by go-rotini/fs and is atomic-rename aware, debounced, multi-backend).
+`Live[T]` wraps the registry in an `atomic.Pointer[T]`-backed handle. Reads are O(1) and lock-free; readers always observe a complete, validated snapshot. Any source that implements `Watcher` participates; file-backed sources are watched through the registry's `WatcherFactory`, which you install with `recon.WithWatcher`. The `fswatch` subpackage provides one backed by [go-rotini/fs](https://github.com/go-rotini/fs) (atomic-rename aware, debounced, multi-backend); `recon.NewPollWatcher` is a stdlib-only poller. Without a factory, file sources are read once and `NewLive` returns `ErrNotWatched`.
+
+```go
+import "github.com/go-rotini/recon/fswatch"
+
+r, err := recon.New(
+	recon.WithWatcher(fswatch.New()),
+	recon.WithSource(fileSrc),
+)
+```
+
+Then wrap the watched registry `r` in a `Live` handle:
 
 ```go
 type Config struct {
@@ -131,6 +142,8 @@ for {
 ```
 
 The reload pipeline rebuilds the snapshot, computes the changed-key delta, optionally validates, and atomic-swaps the pointer; a failed candidate retains the previous value and emits an `Event` with `Err` set.
+
+A registry that is built, read and dropped (a CLI reading its config once) doesn't need any of this: pass `recon.WithoutWatch()` for no watch engine and no goroutine. `Events()` then returns nil, and `NewLive` refuses such a registry with `ErrNotWatched`.
 
 ## Per-source resolution (`PerSourceFor`)
 
@@ -167,6 +180,19 @@ Schema validation is opt-in. `WithSchema(bytes)` is the one-line form for raw JS
 r, err := recon.New(
 	recon.WithSource(fileSrc),
 	recon.WithSchema(schemaBytes),
+)
+```
+
+Schemas are compiled offline: a `$ref` resolves within the schema or to an embedded meta-schema, and a remote `https://` `$ref` is an error. To fetch remote refs, compile with a loader from [jsonschema/httploader](https://pkg.go.dev/github.com/go-rotini/jsonschema/httploader) and wrap the result:
+
+```go
+s, err := jsonschema.Compile(schemaBytes, jsonschema.WithLoader(httploader.Default()))
+if err != nil {
+	return err
+}
+r, err := recon.New(
+	recon.WithSource(fileSrc),
+	recon.WithValidator(recon.NewJSONSchemaValidatorFromSchema(s)),
 )
 ```
 

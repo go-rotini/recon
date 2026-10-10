@@ -79,7 +79,6 @@ func New(opts ...Option) (*Registry, error) {
 		return nil, options.optionErr
 	}
 	installDefaultCodecs(&options)
-	installDefaultWatcher(&options)
 	r := &Registry{
 		state: &registryState{
 			opts:      options,
@@ -113,8 +112,10 @@ func New(opts ...Option) (*Registry, error) {
 
 	// Start the engine while we still hold the lock so the source set it
 	// subscribes to matches the snapshot we just installed.
-	r.state.watch = newWatchEngine(r)
-	r.state.watch.start()
+	if !options.noWatch {
+		r.state.watch = newWatchEngine(r)
+		r.state.watch.start()
+	}
 
 	r.state.mu.Unlock()
 
@@ -156,7 +157,7 @@ func (r *Registry) Close() error {
 // retain the previous snapshot and surface via [Event.Err]. The channel
 // is buffered (capacity from [WithEventBufferSize], default 16). Slow
 // consumers cause drops surfaced on the next deliverable Event's
-// Warnings. Returns nil on a closed-before-construction registry.
+// Warnings. Returns nil for a registry built [WithoutWatch].
 func (r *Registry) Events() <-chan Event {
 	if r.state.watch == nil {
 		return nil
@@ -229,11 +230,7 @@ func (r *Registry) InsertSource(at int, s Source) error {
 	case at > len(r.state.sources):
 		at = len(r.state.sources)
 	}
-	if r.state.opts.watcher != nil {
-		if setter, ok := s.(watcherSetter); ok {
-			setter.SetWatcher(r.state.opts.watcher)
-		}
-	}
+	r.injectWatcherLocked(s)
 	r.state.sources = slices.Insert(r.state.sources, at, s)
 	if err := r.rebuildSnapshotLocked(); err != nil {
 		r.state.sources = slices.Delete(r.state.sources, at, at+1)
@@ -329,9 +326,8 @@ func (r *Registry) Validate() error {
 // addSourceLocked is the helper used by [AddSource] and by [New]'s
 // bulk-add. Caller must hold r.state.mu.
 //
-// If the source exposes [watcherSetter] and the registry has a watcher
-// factory configured, it is injected here so [Source.Watch] uses the
-// registry's chosen backend.
+// The registry-wide watcher factory, if any, is injected via
+// [Registry.injectWatcherLocked].
 func (r *Registry) addSourceLocked(s Source) error {
 	if s == nil {
 		return fmt.Errorf("%w: nil Source", ErrInvalidPath)
@@ -339,13 +335,33 @@ func (r *Registry) addSourceLocked(s Source) error {
 	if err := r.checkSourceNameLocked(s.Name()); err != nil {
 		return err
 	}
-	if r.state.opts.watcher != nil {
-		if setter, ok := s.(watcherSetter); ok {
-			setter.SetWatcher(r.state.opts.watcher)
-		}
-	}
+	r.injectWatcherLocked(s)
 	r.state.sources = append(r.state.sources, s)
 	return nil
+}
+
+// injectWatcherLocked hands the registry-wide [WatcherFactory] to a
+// source that exposes [watcherSetter], so [Source.Watch] uses the
+// registry's chosen backend. A source that already has its own factory
+// (from [WithFileWatcher]) keeps it. Caller must hold r.state.mu.
+func (r *Registry) injectWatcherLocked(s Source) {
+	if r.state.opts.watcher == nil {
+		return
+	}
+	setter, ok := s.(watcherSetter)
+	if !ok {
+		return
+	}
+	if own, ok := s.(watcherGetter); ok && own.watcherFactory() != nil {
+		return
+	}
+	setter.SetWatcher(r.state.opts.watcher)
+}
+
+// watcherGetter reports a source's own [WatcherFactory]. Satisfied by
+// [FileSource].
+type watcherGetter interface {
+	watcherFactory() WatcherFactory
 }
 
 // watcherSetter is the optional capability sources implement to accept
@@ -407,15 +423,13 @@ func redactValidationErrorsForSecrets(err error, secretKeys map[string]struct{})
 	if err == nil || len(secretKeys) == 0 {
 		return
 	}
-	var multi *MultiError
-	if errors.As(err, &multi) {
+	if multi, ok := errors.AsType[*MultiError](err); ok {
 		for _, sub := range multi.Errors {
 			redactValidationErrorsForSecrets(sub, secretKeys)
 		}
 		return
 	}
-	var ve *ValidationError
-	if errors.As(err, &ve) {
+	if ve, ok := errors.AsType[*ValidationError](err); ok {
 		if _, ok := secretKeys[ve.Path.String()]; ok {
 			ve.Secret = true
 		}

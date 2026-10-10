@@ -33,7 +33,7 @@ func NewBufferSource(name, format string, data []byte, opts ...BufferOption) (So
 	}
 	decoded, err := codec.Decode(data)
 	if err != nil {
-		return nil, &ParseError{Source: name, Cause: err}
+		return nil, newParseError(name, "", data, err)
 	}
 	return &BufferSource{
 		MapSource: NewMapSource(name, decoded),

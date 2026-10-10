@@ -125,7 +125,7 @@ func FuzzBind(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, key, val string) {
-		r, err := New()
+		r, err := New(WithoutWatch())
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
@@ -149,7 +149,7 @@ func FuzzMergeMaps(f *testing.F) {
 	f.Add("with.[escaped].seg", "v")
 
 	f.Fuzz(func(t *testing.T, key, val string) {
-		r, err := New()
+		r, err := New(WithoutWatch())
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}

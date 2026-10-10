@@ -17,9 +17,11 @@ var JSON Codec = jsonCodec{}
 func (jsonCodec) Name() string         { return FormatJSON }
 func (jsonCodec) Extensions() []string { return []string{".json"} }
 
-// Decode parses data as a JSON object. Arrays or scalars at the root
-// are rejected with wrapped [ErrUnsupportedFormat].
+// Decode parses data as a JSON object, ignoring one leading UTF-8
+// byte-order mark. Arrays or scalars at the root are rejected with
+// wrapped [ErrUnsupportedFormat].
 func (jsonCodec) Decode(data []byte) (map[string]any, error) {
+	data = stripBOM(data)
 	if len(data) == 0 {
 		return map[string]any{}, nil
 	}

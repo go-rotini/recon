@@ -28,6 +28,7 @@ type registryOptions struct {
 
 	codecs  *Codecs
 	watcher WatcherFactory
+	noWatch bool
 
 	secretRedactor func(string) string
 
@@ -181,10 +182,20 @@ func WithCodecs(cs *Codecs) Option {
 }
 
 // WithWatcher installs a registry-wide [WatcherFactory] used by
-// file-backed sources that don't ship their own. Default is
-// [FSWatcher].
+// file-backed sources that don't ship their own. There is no default:
+// without one, file sources are read once and never watched. Use
+// fswatch.New() from github.com/go-rotini/recon/fswatch for kernel
+// notifications, or [NewPollWatcher] for a stdlib-only poller.
 func WithWatcher(w WatcherFactory) Option {
 	return func(o *registryOptions) { o.watcher = w }
+}
+
+// WithoutWatch builds a one-shot registry: no watch engine, no
+// goroutine, no source subscriptions and no [WithPoll] ticker. Values
+// change only through [Registry.Reload], [Registry.Set] and friends;
+// [Registry.Events] returns nil, and [NewLive] refuses the registry.
+func WithoutWatch() Option {
+	return func(o *registryOptions) { o.noWatch = true }
 }
 
 // WithSecretRedactor replaces the default "***" redactor.

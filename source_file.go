@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-
-	rotinifs "github.com/go-rotini/fs"
 )
 
 // FileSource is a codec-driven [Source] backed by a single file on
@@ -51,8 +49,10 @@ type FileSource struct {
 
 // NewFileSource constructs a [FileSource] for path. Codec resolution
 // order: [WithFileCodec] > [WithFileFormat] > file extension. Returns
-// wrapped [ErrUnsupportedFormat] when no codec resolves. Decode
-// failures surface as [*ParseError].
+// wrapped [ErrUnsupportedFormat] when no codec resolves. One leading
+// UTF-8 byte-order mark is ignored. Decode failures surface as
+// [*ParseError] with the resolved path and, when the parser reports
+// one, the line and column.
 //
 // The source's Name is the basename of the resolved path.
 func NewFileSource(path string, opts ...FileOption) (Source, error) {
@@ -75,11 +75,12 @@ func NewFileSource(path string, opts ...FileOption) (Source, error) {
 	if err != nil {
 		return nil, err
 	}
+	data = stripBOM(data)
 	decoded := map[string]any{}
 	if !missing && len(data) > 0 {
 		decoded, err = codec.Decode(data)
 		if err != nil {
-			return nil, &ParseError{Source: name, Cause: err}
+			return nil, newParseError(name, resolved, data, err)
 		}
 	}
 
@@ -124,9 +125,10 @@ func (s *FileSource) Reload() error {
 		s.Replace(map[string]any{})
 		return nil
 	}
+	data = stripBOM(data)
 	decoded, err := s.codec.Decode(data)
 	if err != nil {
-		return &ParseError{Source: s.Name(), Cause: err}
+		return newParseError(s.Name(), s.resolvedPath, data, err)
 	}
 	s.Replace(decoded)
 	return nil
@@ -139,7 +141,7 @@ func (s *FileSource) Reload() error {
 // Each upstream notification triggers a [Reload], then forwards a
 // [SourceChange] downstream.
 func (s *FileSource) Watch(ctx context.Context) (<-chan SourceChange, error) {
-	factory := s.watcher
+	factory := s.watcherFactory()
 	if factory == nil {
 		ch := make(chan SourceChange)
 		close(ch)
@@ -152,6 +154,13 @@ func (s *FileSource) Watch(ctx context.Context) (<-chan SourceChange, error) {
 	out := make(chan SourceChange, 1)
 	go s.fanWatchEvents(ctx, upstream, out)
 	return out, nil
+}
+
+// watcherFactory returns the factory Watch will use, or nil.
+func (s *FileSource) watcherFactory() WatcherFactory {
+	s.reload.Lock()
+	defer s.reload.Unlock()
+	return s.watcher
 }
 
 // SetWatcher attaches a [WatcherFactory] after construction. Used by
@@ -236,7 +245,7 @@ func resolveFilePath(path string, cfg fileOptions) (string, error) {
 		if firstResolved == "" {
 			firstResolved = abs
 		}
-		if rotinifs.Exists(abs) {
+		if fileExists(abs) {
 			return abs, nil
 		}
 	}
@@ -296,13 +305,13 @@ func resolveFileCodec(path string, cfg fileOptions, codecs *Codecs) (Codec, erro
 // readFileMaybeOptional reads path. With optional=true a missing file
 // returns (nil, true, nil); other errors surface regardless.
 func readFileMaybeOptional(path string, optional bool) (data []byte, missing bool, err error) {
-	if !rotinifs.Exists(path) {
+	if !fileExists(path) {
 		if optional {
 			return nil, true, nil
 		}
 		return nil, false, fmt.Errorf("recon: file %q: %w", path, fs.ErrNotExist)
 	}
-	b, err := rotinifs.ReadFile(path)
+	b, err := readFileCapped(path)
 	if err != nil {
 		if optional && errors.Is(err, fs.ErrNotExist) {
 			return nil, true, nil
