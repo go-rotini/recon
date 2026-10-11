@@ -191,8 +191,7 @@ func TestRegistry_RegisterAlias_CycleDetected(t *testing.T) {
 	}
 	// c → a would close the cycle.
 	err := r.RegisterAlias("c", "a")
-	var cyc *AliasCycleError
-	if !errors.As(err, &cyc) {
+	if _, ok := errors.AsType[*AliasCycleError](err); !ok {
 		t.Fatalf("err = %v, want *AliasCycleError", err)
 	}
 	if !errors.Is(err, ErrAliasCycle) {

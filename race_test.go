@@ -31,7 +31,7 @@ func TestRace_ConcurrentGetSetReload(t *testing.T) {
 	// Readers: hammer the snapshot.
 	for range readers {
 		wg.Go(func() {
-			for n := 0; n < iters; n++ {
+			for range iters {
 				select {
 				case <-stop:
 					return
@@ -48,7 +48,7 @@ func TestRace_ConcurrentGetSetReload(t *testing.T) {
 	// Writers: rotate explicit overrides.
 	for w := range writers {
 		wg.Go(func() {
-			for n := 0; n < iters/4; n++ {
+			for n := range iters / 4 {
 				select {
 				case <-stop:
 					return
@@ -62,7 +62,7 @@ func TestRace_ConcurrentGetSetReload(t *testing.T) {
 	// Reloaders: drive a handful of Reloads.
 	for range reloaders {
 		wg.Go(func() {
-			for n := 0; n < iters/16; n++ {
+			for range iters / 16 {
 				select {
 				case <-stop:
 					return
@@ -123,7 +123,7 @@ func TestRace_WatcherFloodWithReaders(t *testing.T) {
 	// 16 readers.
 	for range 16 {
 		wg.Go(func() {
-			for n := 0; n < 5000; n++ {
+			for range 5000 {
 				select {
 				case <-stop:
 					return
@@ -199,7 +199,7 @@ func TestRace_LiveGetConcurrentReload(t *testing.T) {
 	// 32 readers.
 	for range 32 {
 		wg.Go(func() {
-			for n := 0; n < 10_000; n++ {
+			for range 10_000 {
 				select {
 				case <-stop:
 					return
@@ -238,7 +238,7 @@ func TestRace_RegistryCloseDuringReads(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
-			for n := 0; n < 5_000; n++ {
+			for range 5_000 {
 				_, _, _ = r.Get("k")
 				_ = r.IsSet("k")
 			}

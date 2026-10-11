@@ -70,6 +70,10 @@ type Registry struct {
 // enabling tests that assert "this registration would have failed"
 // while still inspecting the registry. Production callers should treat
 // any non-nil error as a hard stop.
+//
+// The registry's codec set (used by `format=` struct tags and [Save])
+// is [DefaultCodecs] unless an option replaces it. Use [NewWithCodecs]
+// to link only the codecs a program uses.
 func New(opts ...Option) (*Registry, error) {
 	options := defaultRegistryOptions()
 	for _, opt := range opts {
@@ -78,7 +82,33 @@ func New(opts ...Option) (*Registry, error) {
 	if options.optionErr != nil {
 		return nil, options.optionErr
 	}
-	installDefaultCodecs(&options)
+	options.finishCodecs(DefaultCodecs)
+	return buildRegistry(options)
+}
+
+// NewWithCodecs is [New] with codecs as the registry's codec set in
+// place of [DefaultCodecs]; nil means no codecs. Options apply on top
+// of it ([WithCodecs] replaces it, [WithCodec] adds to it). A program
+// that builds registries only this way (and builds file sources with
+// [NewFileSourceWithCodecs]) links no codec it did not pass.
+func NewWithCodecs(codecs *Codecs, opts ...Option) (*Registry, error) {
+	options := defaultRegistryOptions()
+	options.codecs = codecs
+	if options.codecs == nil {
+		options.codecs = NewCodecs()
+	}
+	for _, opt := range opts {
+		opt(&options)
+	}
+	if options.optionErr != nil {
+		return nil, options.optionErr
+	}
+	options.finishCodecs(func() *Codecs { return NewCodecs() })
+	return buildRegistry(options)
+}
+
+// buildRegistry builds a Registry from fully resolved options.
+func buildRegistry(options registryOptions) (*Registry, error) {
 	r := &Registry{
 		state: &registryState{
 			opts:      options,

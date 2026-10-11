@@ -26,6 +26,17 @@ type FileSourceFS struct {
 // [WithFileFormat] > extension lookup. Returns wrapped
 // [ErrInvalidPath] for nil fsys or empty name.
 func NewFileSourceFS(name string, fsys fs.FS, path string, opts ...FileOption) (Source, error) {
+	return newFileSourceFS(DefaultCodecs(), newParseError, name, fsys, path, opts)
+}
+
+// NewFileSourceFSWithCodecs is [NewFileSourceFS] resolving the codec
+// against codecs instead of [DefaultCodecs], as
+// [NewFileSourceWithCodecs] does.
+func NewFileSourceFSWithCodecs(codecs *Codecs, name string, fsys fs.FS, path string, opts ...FileOption) (Source, error) {
+	return newFileSourceFS(codecs, newCodecParseError, name, fsys, path, opts)
+}
+
+func newFileSourceFS(codecs *Codecs, parseErr parseErrorFunc, name string, fsys fs.FS, path string, opts []FileOption) (Source, error) {
 	if fsys == nil {
 		return nil, fmt.Errorf("%w: NewFileSourceFS: nil fs.FS", ErrInvalidPath)
 	}
@@ -37,7 +48,7 @@ func NewFileSourceFS(name string, fsys fs.FS, path string, opts ...FileOption) (
 		opt(&cfg)
 	}
 
-	codec, err := resolveFileCodec(path, cfg, DefaultCodecs())
+	codec, err := resolveFileCodec(path, cfg, codecs)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +62,7 @@ func NewFileSourceFS(name string, fsys fs.FS, path string, opts ...FileOption) (
 	if !missing && len(data) > 0 {
 		decoded, err = codec.Decode(data)
 		if err != nil {
-			return nil, newParseError(name, path, data, err)
+			return nil, parseErr(name, path, data, err)
 		}
 	}
 

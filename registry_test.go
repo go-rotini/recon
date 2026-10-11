@@ -226,8 +226,7 @@ func TestRegistry_PinSource_UnknownSource(t *testing.T) {
 	if !errors.Is(err, ErrSourceConflict) {
 		t.Fatalf("err=%v, want ErrSourceConflict", err)
 	}
-	var srcErr *SourceError
-	if !errors.As(err, &srcErr) {
+	if _, ok := errors.AsType[*SourceError](err); !ok {
 		t.Fatalf("err=%v, want *SourceError", err)
 	}
 }
@@ -260,8 +259,7 @@ func TestRegistry_RegisterAlias_CycleRejected(t *testing.T) {
 	if !errors.Is(err, ErrAliasCycle) {
 		t.Fatalf("cycle err=%v, want ErrAliasCycle", err)
 	}
-	var cyc *AliasCycleError
-	if !errors.As(err, &cyc) {
+	if _, ok := errors.AsType[*AliasCycleError](err); !ok {
 		t.Fatalf("err=%v, want *AliasCycleError", err)
 	}
 	// Registry left intact — the original aliases should still work.
@@ -334,8 +332,8 @@ func TestRegistry_ReloadContext_Canceled(t *testing.T) {
 
 func TestRegistry_ReloadContext_NilContext(t *testing.T) {
 	r := newRegistry(t)
-	//nolint:SA1012 // explicitly verifying the nil-context guard
-	err := r.ReloadContext(nil)
+	var nilCtx context.Context // explicitly verifying the nil-context guard
+	err := r.ReloadContext(nilCtx)
 	if !errors.Is(err, ErrNilContext) {
 		t.Fatalf("err=%v, want ErrNilContext", err)
 	}

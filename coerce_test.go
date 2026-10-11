@@ -265,7 +265,7 @@ func TestFieldKeyFromTag_SkipReturnsEmpty(t *testing.T) {
 	type S struct {
 		Hidden string `recon:"-"`
 	}
-	rt := reflect.TypeOf(S{})
+	rt := reflect.TypeFor[S]()
 	if got := fieldKeyFromTag(rt.Field(0)); got != "" {
 		t.Fatalf("got %q, want empty (skip)", got)
 	}
@@ -278,7 +278,7 @@ func TestFieldKeyFromTag_FallbackChain(t *testing.T) {
 		C string `toml:"c_toml"`
 		D string `env:"D_ENV"`
 	}
-	rt := reflect.TypeOf(S{})
+	rt := reflect.TypeFor[S]()
 	cases := []struct {
 		i    int
 		want string
@@ -299,7 +299,7 @@ func TestFieldKeyFromTag_MultiSegmentCollapses(t *testing.T) {
 	type S struct {
 		X string `recon:"server.port"`
 	}
-	rt := reflect.TypeOf(S{})
+	rt := reflect.TypeFor[S]()
 	if got := fieldKeyFromTag(rt.Field(0)); got != "server" {
 		t.Fatalf("got %q, want %q (first segment of server.port)", got, "server")
 	}

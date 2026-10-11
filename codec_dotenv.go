@@ -1,6 +1,7 @@
 package recon
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/go-rotini/dotenv"
@@ -25,7 +26,7 @@ func (dotenvCodec) Decode(data []byte) (map[string]any, error) {
 	}
 	f, err := dotenv.Parse(data)
 	if err != nil {
-		return nil, fmt.Errorf("recon: dotenv decode: %w", err)
+		return nil, dotenvDecodeError(err)
 	}
 	flat := f.ToMap()
 	out := make(map[string]any, len(flat))
@@ -52,4 +53,11 @@ func (dotenvCodec) Encode(v map[string]any) ([]byte, error) {
 		return nil, fmt.Errorf("recon: dotenv encode: %w", err)
 	}
 	return b, nil
+}
+
+func dotenvDecodeError(err error) error {
+	if e, ok := errors.AsType[*dotenv.ParseError](err); ok {
+		return &codecError{format: FormatDotenv, err: err, line: e.Pos.Line, col: e.Pos.Column, msg: e.Message}
+	}
+	return fmt.Errorf("recon: dotenv decode: %w", err)
 }

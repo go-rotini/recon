@@ -1,6 +1,7 @@
 package recon
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/go-rotini/yaml"
@@ -25,7 +26,7 @@ func (yamlCodec) Decode(data []byte) (map[string]any, error) {
 	}
 	var v any
 	if err := yaml.Unmarshal(data, &v); err != nil {
-		return nil, fmt.Errorf("recon: yaml decode: %w", err)
+		return nil, yamlDecodeError(err)
 	}
 	m, ok := normalizeMap(v)
 	if !ok {
@@ -41,4 +42,11 @@ func (yamlCodec) Encode(v map[string]any) ([]byte, error) {
 		return nil, fmt.Errorf("recon: yaml encode: %w", err)
 	}
 	return b, nil
+}
+
+func yamlDecodeError(err error) error {
+	if e, ok := errors.AsType[*yaml.SyntaxError](err); ok {
+		return &codecError{format: FormatYAML, err: err, line: e.Pos.Line, col: e.Pos.Column, msg: e.Message}
+	}
+	return fmt.Errorf("recon: yaml decode: %w", err)
 }

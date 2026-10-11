@@ -2,6 +2,7 @@ package recon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -27,7 +28,7 @@ func (jsonCodec) Decode(data []byte) (map[string]any, error) {
 	}
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {
-		return nil, fmt.Errorf("recon: json decode: %w", err)
+		return nil, jsonDecodeError(err, data)
 	}
 	m, ok := v.(map[string]any)
 	if !ok {
@@ -45,4 +46,24 @@ func (jsonCodec) Encode(v map[string]any) ([]byte, error) {
 		return nil, fmt.Errorf("recon: json encode: %w", err)
 	}
 	return b, nil
+}
+
+// jsonDecodeError gives a syntax error the line and column of its byte
+// offset into data.
+func jsonDecodeError(err error, data []byte) error {
+	if e, ok := errors.AsType[*json.SyntaxError](err); ok {
+		line, col := offsetPosition(data, jsonSyntaxOffset(e))
+		return &codecError{format: FormatJSON, err: err, line: line, col: col, msg: e.Error()}
+	}
+	return fmt.Errorf("recon: json decode: %w", err)
+}
+
+// jsonSyntaxOffset is the offset of the byte e complains about: Offset
+// is just past it, except at the end of the input, where Offset
+// already marks where more was expected.
+func jsonSyntaxOffset(e *json.SyntaxError) int64 {
+	if e.Error() == jsonUnexpectedEnd {
+		return e.Offset
+	}
+	return e.Offset - 1
 }

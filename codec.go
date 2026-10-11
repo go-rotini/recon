@@ -1,6 +1,7 @@
 package recon
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -116,4 +117,15 @@ func (c *Codecs) Clone() *Codecs {
 	out := &Codecs{byName: make(map[string]Codec, len(c.byName))}
 	maps.Copy(out.byName, c.byName)
 	return out
+}
+
+// lookupCodec returns the codec named format from codecs (nil holds
+// none), or wrapped [ErrUnsupportedFormat].
+func lookupCodec(codecs *Codecs, format string) (Codec, error) {
+	if codecs != nil {
+		if c, ok := codecs.ByName(format); ok {
+			return c, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: no codec registered for format %q", ErrUnsupportedFormat, format)
 }

@@ -275,14 +275,9 @@ func (w *bindWalker) applyExpand(v Value) (Value, error) {
 // applyFormatDecode runs v's string form through the codec named
 // format, returning a Value carrying the decoded shape.
 func (w *bindWalker) applyFormatDecode(v Value, format string) (Value, error) {
-	codecs := w.registry.state.opts.codecs
-	if codecs == nil {
-		codecs = DefaultCodecs()
-	}
-	c, ok := codecs.ByName(format)
-	if !ok {
-		return Value{}, fmt.Errorf("%w: no codec registered for format %q",
-			ErrUnsupportedFormat, format)
+	c, err := lookupCodec(w.registry.state.opts.codecs, format)
+	if err != nil {
+		return Value{}, err
 	}
 	s, err := valueAsString(v)
 	if err != nil {

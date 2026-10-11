@@ -1,6 +1,7 @@
 package recon
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/go-rotini/toml"
@@ -21,7 +22,7 @@ func (tomlCodec) Decode(data []byte) (map[string]any, error) {
 	}
 	var v any
 	if err := toml.Unmarshal(data, &v); err != nil {
-		return nil, fmt.Errorf("recon: toml decode: %w", err)
+		return nil, tomlDecodeError(err)
 	}
 	m, ok := normalizeMap(v)
 	if !ok {
@@ -37,4 +38,11 @@ func (tomlCodec) Encode(v map[string]any) ([]byte, error) {
 		return nil, fmt.Errorf("recon: toml encode: %w", err)
 	}
 	return b, nil
+}
+
+func tomlDecodeError(err error) error {
+	if e, ok := errors.AsType[*toml.SyntaxError](err); ok {
+		return &codecError{format: FormatTOML, err: err, line: e.Pos.Line, col: e.Pos.Column, msg: e.Message}
+	}
+	return fmt.Errorf("recon: toml decode: %w", err)
 }

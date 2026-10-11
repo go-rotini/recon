@@ -26,6 +26,10 @@
 //   - Open seams. [Codec], [SchemaValidator], [WatcherFactory],
 //     [FlagAdapter], [RemoteBackend], and [Source] are interfaces;
 //     one option replaces any default.
+//   - Link what you use. [New] and [NewFileSource] resolve formats
+//     against [DefaultCodecs]; [NewWithCodecs] and the *WithCodecs
+//     source constructors take an explicit set instead, so the binary
+//     links only those codecs.
 //
 // See the README at https://github.com/go-rotini/recon for runnable
 // examples.

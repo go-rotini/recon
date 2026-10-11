@@ -122,16 +122,7 @@ func (r *Registry) encodeWith(w io.Writer, cfg saveOptions) error {
 // resolveSaveCodec looks the codec named format up in the registry's
 // codec set. Returns wrapped [ErrUnsupportedFormat] when unknown.
 func (r *Registry) resolveSaveCodec(format string) (Codec, error) {
-	codecs := r.state.opts.codecs
-	if codecs == nil {
-		codecs = DefaultCodecs()
-	}
-	c, ok := codecs.ByName(format)
-	if !ok {
-		return nil, fmt.Errorf("%w: no codec registered for format %q",
-			ErrUnsupportedFormat, format)
-	}
-	return c, nil
+	return lookupCodec(r.state.opts.codecs, format)
 }
 
 func buildSaveOptions(opts []SaveOption) saveOptions {

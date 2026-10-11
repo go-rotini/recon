@@ -1,6 +1,7 @@
 package recon
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/go-rotini/jsonc"
@@ -25,7 +26,7 @@ func (jsoncCodec) Decode(data []byte) (map[string]any, error) {
 	}
 	var v any
 	if err := jsonc.Unmarshal(data, &v); err != nil {
-		return nil, fmt.Errorf("recon: jsonc decode: %w", err)
+		return nil, jsoncDecodeError(err)
 	}
 	m, ok := v.(map[string]any)
 	if !ok {
@@ -43,4 +44,11 @@ func (jsoncCodec) Encode(v map[string]any) ([]byte, error) {
 		return nil, fmt.Errorf("recon: jsonc encode: %w", err)
 	}
 	return b, nil
+}
+
+func jsoncDecodeError(err error) error {
+	if e, ok := errors.AsType[*jsonc.SyntaxError](err); ok {
+		return &codecError{format: FormatJSONC, err: err, line: e.Pos.Line, col: e.Pos.Column, msg: e.Message}
+	}
+	return fmt.Errorf("recon: jsonc decode: %w", err)
 }

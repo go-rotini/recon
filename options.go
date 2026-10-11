@@ -26,9 +26,10 @@ type registryOptions struct {
 
 	validator SchemaValidator
 
-	codecs  *Codecs
-	watcher WatcherFactory
-	noWatch bool
+	codecs     *Codecs
+	codecEdits []func(*Codecs) // WithCodec/WithoutCodec before a set exists
+	watcher    WatcherFactory
+	noWatch    bool
 
 	secretRedactor func(string) string
 
@@ -148,37 +149,53 @@ func WithSchema(schemaJSON []byte) Option {
 }
 
 // WithCodec registers (or replaces by name) a [Codec] in the
-// registry's codec set. When called before any other codec option, the
-// option starts from [DefaultCodecs] so the new codec joins (rather
-// than replaces) the bundled defaults. Pair with [WithCodecs] for a
-// clean-slate set.
+// registry's codec set: under [New] the new codec joins (rather than
+// replaces) the bundled defaults, under [NewWithCodecs] the set passed
+// there. Pair with [WithCodecs] for a clean-slate set.
 func WithCodec(c Codec) Option {
 	return func(o *registryOptions) {
-		if c == nil {
-			return
+		if c != nil {
+			o.editCodecs(func(cs *Codecs) { cs.Register(c) })
 		}
-		if o.codecs == nil {
-			o.codecs = DefaultCodecs()
-		}
-		o.codecs.Register(c)
 	}
 }
 
-// WithoutCodec removes a codec by name. Starts from [DefaultCodecs]
-// when no codec option has been applied yet, matching the "I want the
-// defaults except X" intent.
+// WithoutCodec removes a codec by name from the registry's codec set;
+// under [New] that means "the defaults except name".
 func WithoutCodec(name string) Option {
 	return func(o *registryOptions) {
-		if o.codecs == nil {
-			o.codecs = DefaultCodecs()
-		}
-		o.codecs.Unregister(name)
+		o.editCodecs(func(cs *Codecs) { cs.Unregister(name) })
 	}
 }
 
 // WithCodecs replaces the registry's entire codec set.
 func WithCodecs(cs *Codecs) Option {
-	return func(o *registryOptions) { o.codecs = cs }
+	return func(o *registryOptions) {
+		o.codecs = cs
+		o.codecEdits = nil
+	}
+}
+
+// editCodecs applies edit to the codec set now or, while no set is
+// chosen yet, once the constructor installs its base set.
+func (o *registryOptions) editCodecs(edit func(*Codecs)) {
+	if o.codecs == nil {
+		o.codecEdits = append(o.codecEdits, edit)
+		return
+	}
+	edit(o.codecs)
+}
+
+// finishCodecs installs base when no set was chosen and applies the
+// edits queued before one was.
+func (o *registryOptions) finishCodecs(base func() *Codecs) {
+	if o.codecs == nil {
+		o.codecs = base()
+	}
+	for _, edit := range o.codecEdits {
+		edit(o.codecs)
+	}
+	o.codecEdits = nil
 }
 
 // WithWatcher installs a registry-wide [WatcherFactory] used by

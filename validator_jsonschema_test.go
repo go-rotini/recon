@@ -370,8 +370,7 @@ func assertValidationErrorKeyword(t *testing.T, err error, keyword string) {
 	// debuggable.
 	got := make([]string, 0, len(multi.Errors))
 	for _, sub := range multi.Errors {
-		var ve *ValidationError
-		if errors.As(sub, &ve) {
+		if ve, ok := errors.AsType[*ValidationError](sub); ok {
 			got = append(got, ve.Rule)
 		}
 	}
