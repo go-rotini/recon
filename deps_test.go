@@ -7,9 +7,10 @@ import (
 	"testing"
 )
 
-// TestRootPackageDependencies keeps network, archive, template and
-// Go-toolchain packages, and go-rotini/fs, out of the root package, so a
-// program that only reads configuration doesn't link them. The
+// TestRootPackageDependencies keeps network, archive, template, crypto,
+// hash and Go-toolchain packages, and go-rotini/fs, out of the root
+// package, so a program that only reads configuration doesn't link
+// them. The
 // notification-based watcher lives in the fswatch subpackage. Each entry
 // also forbids the packages below it.
 func TestRootPackageDependencies(t *testing.T) {
@@ -18,7 +19,7 @@ func TestRootPackageDependencies(t *testing.T) {
 	}
 	forbidden := []string{
 		"net/http", "crypto/tls", "crypto/x509",
-		"go", "archive", "compress/gzip", "text/template",
+		"go", "archive", "compress/gzip", "text/template", "crypto", "hash",
 		"github.com/go-rotini/fs",
 	}
 	for _, goos := range []string{"linux", "darwin", "windows"} {
@@ -28,7 +29,7 @@ func TestRootPackageDependencies(t *testing.T) {
 		if err != nil {
 			t.Fatalf("go list -deps (GOOS=%s): %v", goos, err)
 		}
-		for _, dep := range strings.Fields(string(out)) {
+		for dep := range strings.FieldsSeq(string(out)) {
 			for _, pkg := range forbidden {
 				if dep == pkg || strings.HasPrefix(dep, pkg+"/") {
 					t.Errorf("GOOS=%s: the root package depends on %s", goos, dep)

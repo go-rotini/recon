@@ -28,6 +28,7 @@ This package is used as the default configuration and data-in package for [rotin
 - `io/fs.FS`-backed `NewFileSourceFS` for testing with `testing/fstest.MapFS` and for loading from `embed.FS` bundles
 - Remote-backend adapters (etcd / consul / vault / awsssm / k8s) live in their own modules — opt-in by `go get`; the core ships `NewInMemoryBackend` as a reference and for tests
 - Minimal third-party footprint: composes the go-rotini family
+- Link only the formats you read: `NewWithCodecs`, `NewFileSourceWithCodecs`, `NewFileSourceFSWithCodecs` and `NewStdinSourceWithCodecs` take an explicit codec set, so a program that sticks to them links no other codec
 
 ## Installation
 
@@ -97,6 +98,21 @@ r, err := recon.New(
 ```
 
 Per-key overrides are first-class: `RegisterAlias` makes one path resolve to another (cycle-checked), and `PinSource(key, sourceName)` forces a key to resolve only from a named source.
+
+### Choosing codecs
+
+`New` and `NewFileSource` resolve formats against `DefaultCodecs()`, which links every bundled codec into the binary. To link only the ones you use, pass your own set:
+
+```go
+codecs := recon.NewCodecs(recon.YAML)
+fileSrc, err := recon.NewFileSourceWithCodecs(codecs, "config.yaml") // a .toml path fails with ErrUnsupportedFormat
+if err != nil {
+	return err
+}
+r, err := recon.NewWithCodecs(codecs, recon.WithSource(fileSrc))
+```
+
+The registry uses that set for `format=` struct tags and `Save`. Decode errors that report a line and column implement `PositionError`, which fills `*ParseError`; a custom `Codec` can return one too.
 
 ## Live reload
 

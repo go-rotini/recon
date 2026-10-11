@@ -18,11 +18,22 @@ import (
 // TTY-safe: when stdin is a TTY with no piped data the constructor
 // returns an empty source rather than blocking.
 func NewStdinSource(format string, opts ...StdinOption) (Source, error) {
+	return newStdinSource(DefaultCodecs(), newParseError, format, opts)
+}
+
+// NewStdinSourceWithCodecs is [NewStdinSource] looking format up in
+// codecs instead of [DefaultCodecs]; nil means no codecs, so only
+// [WithStdinCodec] can supply one.
+func NewStdinSourceWithCodecs(codecs *Codecs, format string, opts ...StdinOption) (Source, error) {
+	return newStdinSource(codecs, newCodecParseError, format, opts)
+}
+
+func newStdinSource(codecs *Codecs, parseErr parseErrorFunc, format string, opts []StdinOption) (Source, error) {
 	cfg := stdinOptions{}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	codec, err := resolveStdinCodec(format, cfg, DefaultCodecs())
+	codec, err := resolveStdinCodec(format, cfg, codecs)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +45,7 @@ func NewStdinSource(format string, opts ...StdinOption) (Source, error) {
 	if len(data) > 0 {
 		decoded, err = codec.Decode(data)
 		if err != nil {
-			return nil, newParseError("stdin", "", data, err)
+			return nil, parseErr("stdin", "", data, err)
 		}
 	}
 	return NewMapSource("stdin", decoded), nil
@@ -47,6 +58,9 @@ func resolveStdinCodec(format string, cfg stdinOptions, codecs *Codecs) (Codec, 
 	if format == "" {
 		return nil, fmt.Errorf("%w: NewStdinSource needs a format or WithStdinCodec",
 			ErrUnsupportedFormat)
+	}
+	if codecs == nil {
+		codecs = NewCodecs()
 	}
 	c, ok := codecs.ByName(format)
 	if !ok {

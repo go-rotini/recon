@@ -43,6 +43,9 @@ type FileSource struct {
 	// (only meaningful when optional is true).
 	missing atomic.Bool
 
+	// parseErr builds the error for a decode failure.
+	parseErr parseErrorFunc
+
 	// reload serializes Reload calls.
 	reload sync.Mutex
 }
@@ -56,6 +59,20 @@ type FileSource struct {
 //
 // The source's Name is the basename of the resolved path.
 func NewFileSource(path string, opts ...FileOption) (Source, error) {
+	return newFileSource(DefaultCodecs(), newParseError, path, opts)
+}
+
+// NewFileSourceWithCodecs is [NewFileSource] resolving [WithFileFormat]
+// and the file extension against codecs instead of [DefaultCodecs]; nil
+// means no codecs, so only [WithFileCodec] can supply one. A format
+// missing from codecs returns wrapped [ErrUnsupportedFormat].
+// A decode failure takes its line and column from a [PositionError],
+// which every bundled codec returns for a syntax error.
+func NewFileSourceWithCodecs(codecs *Codecs, path string, opts ...FileOption) (Source, error) {
+	return newFileSource(codecs, newCodecParseError, path, opts)
+}
+
+func newFileSource(codecs *Codecs, parseErr parseErrorFunc, path string, opts []FileOption) (Source, error) {
 	cfg := defaultFileOptions()
 	for _, opt := range opts {
 		opt(&cfg)
@@ -65,7 +82,7 @@ func NewFileSource(path string, opts ...FileOption) (Source, error) {
 		return nil, err
 	}
 
-	codec, err := resolveFileCodec(resolved, cfg, DefaultCodecs())
+	codec, err := resolveFileCodec(resolved, cfg, codecs)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +97,7 @@ func NewFileSource(path string, opts ...FileOption) (Source, error) {
 	if !missing && len(data) > 0 {
 		decoded, err = codec.Decode(data)
 		if err != nil {
-			return nil, newParseError(name, resolved, data, err)
+			return nil, parseErr(name, resolved, data, err)
 		}
 	}
 
@@ -90,6 +107,7 @@ func NewFileSource(path string, opts ...FileOption) (Source, error) {
 		codec:        codec,
 		optional:     cfg.optional,
 		watcher:      cfg.watcher,
+		parseErr:     parseErr,
 	}
 	if missing {
 		src.missing.Store(true)
@@ -128,7 +146,7 @@ func (s *FileSource) Reload() error {
 	data = stripBOM(data)
 	decoded, err := s.codec.Decode(data)
 	if err != nil {
-		return newParseError(s.Name(), s.resolvedPath, data, err)
+		return s.parseErr(s.Name(), s.resolvedPath, data, err)
 	}
 	s.Replace(decoded)
 	return nil
@@ -284,6 +302,9 @@ func expandPath(p string, enabled bool) (string, error) {
 func resolveFileCodec(path string, cfg fileOptions, codecs *Codecs) (Codec, error) {
 	if cfg.codec != nil {
 		return cfg.codec, nil
+	}
+	if codecs == nil {
+		codecs = NewCodecs()
 	}
 	if cfg.format != "" {
 		c, ok := codecs.ByName(cfg.format)

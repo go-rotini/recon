@@ -365,17 +365,22 @@ type RawValue struct {
 //   - Pointer-to-struct triggers a one-shot struct walk over the
 //     decoded map.
 //
+// The codec comes from [DefaultCodecs] (see [RawValue.DecodeWithCodecs]).
 // Returns wrapped [ErrUnsupportedFormat] when no codec matches
 // rv.Format.
 func (rv RawValue) Decode(v any) error {
+	return rv.DecodeWithCodecs(DefaultCodecs(), v)
+}
+
+// DecodeWithCodecs is [RawValue.Decode] looking rv.Format up in codecs
+// (nil holds none) instead of [DefaultCodecs].
+func (rv RawValue) DecodeWithCodecs(codecs *Codecs, v any) error {
 	if v == nil {
 		return fmt.Errorf("%w: RawValue.Decode: nil target", ErrInvalidPath)
 	}
-	codecs := DefaultCodecs()
-	c, ok := codecs.ByName(rv.Format)
-	if !ok {
-		return fmt.Errorf("%w: no codec registered for format %q",
-			ErrUnsupportedFormat, rv.Format)
+	c, err := lookupCodec(codecs, rv.Format)
+	if err != nil {
+		return err
 	}
 	decoded, err := c.Decode(rv.Data)
 	if err != nil {

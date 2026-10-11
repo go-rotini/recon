@@ -2,16 +2,16 @@ package recon
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"os"
 	"time"
 )
 
 // PollWatcher is the stdlib-only [WatcherFactory] fallback. It stats the
-// watched path on a tick and emits a [SourceChange] when size, mtime, or
-// SHA-256 digest differs from the previous sample. Use it when a native
-// fs-notification backend is unavailable or undesirable.
+// watched path on a tick and emits a [SourceChange] when its size,
+// mtime, or (for files up to 1 MiB) FNV-1a content hash differs from
+// the previous sample. Use it when a native fs-notification backend is
+// unavailable or undesirable.
 type PollWatcher struct {
 	interval time.Duration
 }
@@ -79,7 +79,7 @@ type pollSample struct {
 	exists bool
 	size   int64
 	mtime  time.Time
-	digest [sha256.Size]byte
+	digest uint64
 	hashed bool
 }
 
@@ -124,9 +124,25 @@ func pollSnap(path string) (pollSample, error) {
 	if info.Size() <= hashCutoff {
 		data, err := os.ReadFile(path)
 		if err == nil {
-			s.digest = sha256.Sum256(data)
+			s.digest = fnv64a(data)
 			s.hashed = true
 		}
 	}
 	return s, nil
+}
+
+// fnv64a returns the 64-bit FNV-1a hash of data. The poll watcher uses
+// it only to notice content changes that keep size and mtime, so a
+// non-cryptographic hash is enough.
+func fnv64a(data []byte) uint64 {
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	h := uint64(offset64)
+	for _, b := range data {
+		h ^= uint64(b)
+		h *= prime64
+	}
+	return h
 }
