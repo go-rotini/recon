@@ -84,9 +84,11 @@ func WithFileWatcher(w WatcherFactory) FileOption {
 	return func(o *fileOptions) { o.watcher = w }
 }
 
-// WithSearchPaths makes [FileSource] look for the filename in each
+// WithSearchPaths makes [NewFileSource] look for the filename in each
 // directory in order; first existing file wins. The constructor's
-// primary path argument supplies the filename.
+// path argument supplies the filename (its directory is ignored). When
+// no directory has the file, the first candidate is used.
+// [NewFileSourceFS] ignores this option.
 func WithSearchPaths(dirs ...string) FileOption {
 	return func(o *fileOptions) { o.searchPaths = append(o.searchPaths, dirs...) }
 }
@@ -141,9 +143,9 @@ func WithEnvTransform(fn KeyTransform) EnvOption {
 }
 
 // WithEnvKeyParser overrides the env-var-name → [Path] projection
-// used by [OSEnvSource.Keys]. The parser receives the name with any
-// configured prefix already stripped; returning an empty Path skips
-// the variable. Nil is silently ignored.
+// used by [OSEnvSource.Keys]. The parser receives the full variable
+// name, including any [WithEnvPrefix] prefix; returning an empty Path
+// skips the variable. Nil is ignored.
 func WithEnvKeyParser(fn func(name string) Path) EnvOption {
 	return func(o *envOptions) {
 		if fn != nil {

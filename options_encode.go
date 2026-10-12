@@ -1,9 +1,7 @@
 package recon
 
-// SaveOption configures one [Registry.Save] / [Registry.SaveTo] /
-// [Registry.GenerateTemplate] call. Distinct from [Option] because
-// Save is per-call: each invocation can pick a different output
-// format, secret policy, or sub-tree.
+// SaveOption configures one [Registry.Save], [Registry.SaveTo],
+// [Registry.SaveString] or [Registry.GenerateTemplate] call.
 type SaveOption func(*saveOptions)
 
 type saveOptions struct {
@@ -24,8 +22,8 @@ type saveOptions struct {
 }
 
 // WithSaveFormat forces the output format regardless of the
-// destination path's extension. Pass one of the canonical [Format*]
-// constants or any registered codec name.
+// destination path's extension. Pass a codec name from the registry's
+// codec set, such as [FormatYAML].
 func WithSaveFormat(format string) SaveOption {
 	return func(o *saveOptions) { o.format = format }
 }
@@ -35,12 +33,14 @@ func WithSaveIncludeSecrets() SaveOption {
 	return func(o *saveOptions) { o.includeSecrets = true }
 }
 
-// WithSaveIncludeDefaults emits keys whose only source is SetDefault.
+// WithSaveIncludeDefaults emits keys whose only source is
+// [Registry.SetDefault].
 func WithSaveIncludeDefaults() SaveOption {
 	return func(o *saveOptions) { o.includeDefaults = true }
 }
 
-// WithSaveOnly scopes Save to a single key prefix.
+// WithSaveOnly limits output to the keys under prefix, written relative
+// to it so the document is the sub-tree on its own.
 func WithSaveOnly(prefix string) SaveOption {
 	return func(o *saveOptions) { o.onlyPrefix = prefix }
 }

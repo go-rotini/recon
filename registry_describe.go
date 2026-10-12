@@ -35,16 +35,14 @@ type KeyDescription struct {
 	// Aliases lists every alias path that resolves to this key.
 	Aliases []Path
 
-	// Schema carries a per-key schema fragment when the registered
-	// validator exposes one. Empty for the bundled JSON Schema
-	// validator.
+	// Schema is always empty: Describe does not fill it.
 	Schema string
 }
 
-// Describe returns a [Description] of the current snapshot. The
-// result reflects the call instant; callers wanting a consistent
-// view across multiple calls should pin via [Registry.Snapshot] and
-// walk it themselves.
+// Describe returns a [Description] of the whole current snapshot, even
+// on a [Registry.Sub] view. Callers wanting a consistent view across
+// multiple calls should pin via [Registry.Snapshot] and walk it
+// themselves.
 func (r *Registry) Describe() Description {
 	if r.state.closed.Load() {
 		return Description{}
@@ -94,7 +92,7 @@ func (r *Registry) Describe() Description {
 	return out
 }
 
-// DescribeKey is the per-key form of [Describe]. Alias keys resolve
+// DescribeKey is the per-key form of [Registry.Describe]. Alias keys resolve
 // to their canonical row, so DescribeKey("port") and
 // DescribeKey("server.port") return the same row when port is
 // aliased.
@@ -139,10 +137,10 @@ func (r *Registry) DescribeKey(key string) (KeyDescription, bool) {
 }
 
 // MarkSecret records key as containing sensitive data and rebuilds
-// the snapshot so [Describe] / [Save] / [Snapshot.String] see the
-// updated set immediately. Empty key and closed registry are silent
-// no-ops; idempotent. A rebuild failure is logged but not returned —
-// the typical caller is the bind walker emitting a side effect.
+// the snapshot so [Registry.Describe], [Registry.Save] and
+// [Snapshot.String] redact it immediately. An empty key or a closed
+// registry is a no-op; repeated calls are harmless. A rebuild failure
+// is logged, not returned.
 func (r *Registry) MarkSecret(key string) {
 	if key == "" {
 		return
@@ -165,7 +163,7 @@ func (r *Registry) MarkSecret(key string) {
 }
 
 // IsSecret reports whether key has been marked secret, either via
-// [MarkSecret] or by the bind walker on a `secret`-tagged field.
+// [Registry.MarkSecret] or by a bind of a `secret`-tagged field.
 func (r *Registry) IsSecret(key string) bool {
 	if r.state.closed.Load() {
 		return false

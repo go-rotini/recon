@@ -7,9 +7,8 @@ import (
 	"time"
 )
 
-// ValueKind identifies the wire-form type of a [Value]. The registry
-// preserves the wire type from [Source] through coercion so callers can
-// request typed values without losing information.
+// ValueKind identifies the wire-form type of a [Value]: the type the
+// source produced, before any conversion to a Go type.
 type ValueKind int
 
 // ValueKind constants.
@@ -33,8 +32,8 @@ const (
 	SliceKind
 	// MapKind is a map from string to Value.
 	MapKind
-	// RawKind is bytes plus a format hint, used when a source defers
-	// parsing.
+	// RawKind is bytes plus a format hint ([RawValue]), made by
+	// [NewRawValue] for a source that defers parsing.
 	RawKind
 )
 
@@ -77,8 +76,11 @@ type Value struct {
 }
 
 // NewValue wraps a Go value, inferring the [ValueKind] from its dynamic
-// type. Integer types canonicalize to int64; float32 widens to float64.
-// Unrecognized types fall through to StringKind via fmt.Sprint.
+// type. Integer types convert to int64 (a uint or uint64 above
+// math.MaxInt64 wraps negative); float32 widens to float64. []any,
+// []Value, map[string]any and map[string]Value convert recursively to
+// [SliceKind] and [MapKind]. Other types become [StringKind] via
+// fmt.Sprint.
 func NewValue(v any) Value {
 	switch x := v.(type) {
 	case nil:
@@ -168,8 +170,9 @@ func (v Value) withSource(name string) Value {
 // Kind reports the wire-form type of v.
 func (v Value) Kind() ValueKind { return v.kind }
 
-// Source returns the name of the [Source] that produced v, or "" when v
-// was constructed directly and not yet adopted by a registry.
+// Source returns the name of the layer that supplied v in a registry
+// lookup (a source name, "explicit" or "default"), or "" for a Value
+// constructed directly.
 func (v Value) Source() string { return v.source }
 
 // IsZero reports whether v carries no underlying datum. A [NullKind]
@@ -241,7 +244,8 @@ func (v Value) AsString() (string, error) {
 	return s, nil
 }
 
-// AsInt64 returns the int64 value if v is [IntKind].
+// AsInt64 returns the int64 value if v is [IntKind]. Strings are not
+// parsed.
 func (v Value) AsInt64() (int64, error) {
 	if v.kind != IntKind {
 		return 0, typeMismatchErr(v.kind, "int64")
@@ -362,8 +366,10 @@ type RawValue struct {
 //
 //   - *map[string]any or *any receives the decoded payload directly.
 //   - *Value receives the payload wrapped via [NewValue].
-//   - Pointer-to-struct triggers a one-shot struct walk over the
-//     decoded map.
+//   - A pointer to a struct has its fields filled from the top-level
+//     keys, matched by the recon / env / json / yaml / toml tag name or
+//     else the lowercased field name; tag options other than the name
+//     are ignored.
 //
 // The codec comes from [DefaultCodecs] (see [RawValue.DecodeWithCodecs]).
 // Returns wrapped [ErrUnsupportedFormat] when no codec matches

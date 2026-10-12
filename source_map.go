@@ -7,8 +7,8 @@ import (
 )
 
 // MapSource is a [Source] backed by a nested map[string]any matching
-// what a config-file decoder produces. Read-only: programmatic writes
-// go through [Registry.Set].
+// what a config-file decoder produces. Per-key overrides belong in
+// [Registry.Set]; [MapSource.Replace] swaps the whole map.
 type MapSource struct {
 	name string
 	mu   sync.RWMutex
@@ -76,9 +76,8 @@ func (s *MapSource) Keys() []Path {
 // Close is a no-op.
 func (s *MapSource) Close() error { return nil }
 
-// Replace atomically swaps the underlying map. Useful in tests. The
-// caller must not mutate m after the call; Replace takes ownership
-// via deep copy.
+// Replace atomically swaps in a deep copy of m. It does not rebuild the
+// registry's snapshot; call [Registry.Reload] afterwards.
 func (s *MapSource) Replace(m map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

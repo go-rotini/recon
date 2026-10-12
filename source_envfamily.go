@@ -9,8 +9,9 @@ import (
 // EnvFamily describes one nested group of environment variables. Every
 // variable named Base+Separator+K1[+Separator+K2...] is collected into a
 // nested map[string]any rooted at Target: with Base "ACME_HTTP" and Separator
-// "__", ACME_HTTP__RETRY__MAX=9 contributes {retry: {max: "9"}}. Segments are
-// lowercased; values stay strings.
+// "__", ACME_HTTP__RETRY__MAX=9 contributes {retry: {max: "9"}}. Base and the
+// first Separator match case-sensitively; segments are lowercased; values stay
+// strings.
 type EnvFamily struct {
 	// Target is the recon path the assembled family binds to.
 	Target Path

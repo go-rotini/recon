@@ -6,9 +6,8 @@ import (
 	"testing"
 )
 
-// TestPrecedence_Conformance is the Phase-3 precedence-conformance matrix
-// from §8.2 of the requirements doc, scoped to the layers Phase 3 actually
-// implements:
+// TestPrecedence_Conformance is the precedence-conformance matrix over
+// the registry's layers:
 //
 //	high  ─ explicit (Registry.Set)
 //	      ─ pin (Registry.PinSource — overrides the source chain when set)
@@ -17,9 +16,9 @@ import (
 //	               itself, but routes lookups across layers)
 //	low   ─ default (Registry.SetDefault)
 //
-// The "8×8 source-type matrix" the doc calls for is the cross product of
-// the source pair (MapSource / BufferSource) and the layer the value lives
-// in. Every cell asserts which layer wins, and which layers are shadowed.
+// The matrix is the cross product of the source pair (MapSource /
+// BufferSource) and the layer the value lives in. Every cell asserts
+// which layer wins, and which layers are shadowed.
 func TestPrecedence_Conformance(t *testing.T) {
 	// makeSource builds either a MapSource or a BufferSource so the matrix
 	// can drive both source implementations through identical assertions.

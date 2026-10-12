@@ -10,8 +10,8 @@ const DefaultDelimiter = "."
 // configuration hierarchy. Path{"server", "port"} represents
 // "server.port" under the default delimiter.
 //
-// Path is a value type. Methods that return a new Path ([Append],
-// [After], [Clone]) do not mutate the receiver.
+// Methods that return a Path ([Path.Append], [Path.After],
+// [Path.Clone]) return a fresh slice and do not mutate the receiver.
 type Path []string
 
 // MakePath constructs a Path from raw segments; no delimiter parsing
@@ -114,8 +114,8 @@ func (p Path) HasPrefix(prefix Path) bool {
 	return true
 }
 
-// After returns the suffix of p following prefix, or nil when prefix
-// is not a prefix of p. After(Path{}) returns a fresh copy of p.
+// After returns a copy of the suffix of p following prefix, or nil when
+// prefix is not a prefix of p.
 func (p Path) After(prefix Path) Path {
 	if !p.HasPrefix(prefix) {
 		return nil

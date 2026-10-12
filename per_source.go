@@ -59,9 +59,9 @@ func (p PerSource[T]) BySource(name string) ValueSource[T] {
 // rules [Get] follows.
 //
 // A source without the key reports IsSet=false. A source whose value
-// cannot be coerced into T reports IsSet=true with Err set — caller-
-// side resolve logic can then distinguish "missing" from "wrong
-// shape".
+// cannot be coerced into T, or whose Get fails, reports IsSet=true
+// with Err set, so caller-side resolve logic can distinguish
+// "missing" from "wrong shape".
 //
 // Returns a wrapped [ErrRegistryClosed] on a closed registry.
 func PerSourceFor[T any](r *Registry, key string) (PerSource[T], error) {

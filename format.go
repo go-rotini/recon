@@ -25,7 +25,7 @@ var extToFormat = map[string]string{
 	".toml":  FormatTOML,
 	".json":  FormatJSON,
 	".jsonc": FormatJSONC,
-	".json5": FormatJSONC, // JSON5 is a superset handled by the jsonc parser.
+	".json5": FormatJSONC, // parsed as JSONC; JSON5-only syntax is rejected
 	".env":   FormatDotenv,
 }
 

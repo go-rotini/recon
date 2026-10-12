@@ -16,7 +16,8 @@ import (
 //
 // Values surface as [StringKind]; typed coercion happens at the
 // [Registry] level. Use [WithEnvTransform] for a non-default forward
-// projection and [WithEnvKeyParser] for the inverse used by [Keys].
+// projection and [WithEnvKeyParser] for the inverse used by
+// [OSEnvSource.Keys].
 type OSEnvSource struct {
 	prefix    string
 	transform KeyTransform
@@ -95,10 +96,12 @@ func (s *OSEnvSource) Get(path Path) (Value, bool, error) {
 }
 
 // Keys enumerates paths cached from os.Environ. The first call scans
-// the environment; later calls return the cached set until [Refresh].
+// the environment; later calls return the cached set until
+// [OSEnvSource.Refresh]. Get always reads the live environment.
 //
 // The default snake-upper inverse treats every underscore as a
-// separator, so APP_OAUTH2_TOKEN surfaces as Path{"oauth2","token"}.
+// separator, so with prefix "APP_" the variable APP_OAUTH2_TOKEN
+// surfaces as Path{"oauth2","token"}.
 // Supply [WithEnvKeyParser] when a different convention preserves
 // segment boundaries.
 func (s *OSEnvSource) Keys() []Path {
@@ -124,8 +127,7 @@ func (s *OSEnvSource) Keys() []Path {
 func (s *OSEnvSource) Close() error { return nil }
 
 // Refresh re-scans os.Environ to pick up additions or deletions and
-// returns the new key count. Driven by the watch engine's [WithPoll]
-// when live env coverage is wanted.
+// returns the new key count. [WithPoll] calls it on every tick.
 func (s *OSEnvSource) Refresh() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

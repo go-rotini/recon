@@ -15,7 +15,10 @@ import (
 //
 // Construct via [NewLive]; close via [Live.Close] when done. Live
 // spawns one goroutine that consumes [Registry.Events] until Close
-// or until the parent's channel closes.
+// or until the parent's channel closes. That goroutine forwards each
+// event to [Live.Events] and waits for it to be received, so a caller
+// that does not drain [Live.Events] stops further rebinds once its
+// one-slot buffer is full.
 type Live[T any] struct {
 	reg     *Registry
 	decode  func() (*T, error)
@@ -31,9 +34,10 @@ type Live[T any] struct {
 
 // NewLive constructs a [Live] for T against reg. The initial bind
 // runs synchronously; failure returns the error and no goroutine is
-// spawned. After that, Live subscribes to reg.Events() and re-binds
-// on each reload. opts is forwarded verbatim to every [Registry.Bind]
-// call.
+// spawned. After that, Live reads reg.Events() and re-binds after
+// each successful reload. opts is forwarded verbatim to every
+// [Registry.Bind] call. Live becomes the consumer of reg.Events(), so
+// other readers of that channel compete with it for events.
 //
 // A registry that could never deliver a reload is refused with
 // [ErrNotWatched]: one built [WithoutWatch], or one holding a
@@ -80,15 +84,15 @@ func (l *Live[T]) Get() *T {
 	return l.curr.Load()
 }
 
-// Events returns a buffered channel of every reload [Event] Live
-// observed. Use it to surface reload failures alongside the live
-// state. Closed by [Close] or when the parent's Events channel
+// Events returns the channel of every reload [Event] Live observed,
+// with Err set when the rebind failed and Time set to when Live
+// handled it. It has a one-slot buffer and must be drained (see
+// [Live]). Closed by [Live.Close] or when the parent's Events channel
 // closes.
 func (l *Live[T]) Events() <-chan Event { return l.events }
 
-// LastError returns the most recent rebind error, or nil if the
-// most recent reload succeeded. Useful for health-check endpoints
-// that want a single "is my config currently broken?" boolean.
+// LastError returns the error of the most recent reload or rebind, or
+// nil if it succeeded. Useful for health checks.
 func (l *Live[T]) LastError() error {
 	p := l.lastErr.Load()
 	if p == nil {
@@ -152,11 +156,12 @@ func (l *Live[T]) recordErr(err error) {
 	l.lastErr.Store(&err)
 }
 
-// Reload forces a rebind off-cycle, bypassing the registry's reload
-// engine. Useful in tests that need deterministic timing. The Events
-// channel does not receive an entry for an off-cycle Reload.
+// Reload re-binds T from the registry's current snapshot now, without
+// rebuilding the snapshot or waiting for an event. Useful in tests
+// that need deterministic timing. [Live.Events] receives nothing for
+// it. ctx is not used.
 func (l *Live[T]) Reload(ctx context.Context) error {
-	_ = ctx // reserved for ctx-aware Bind in a future version
+	_ = ctx // unused: the rebind takes no context
 	next, err := l.decode()
 	if err != nil {
 		l.recordErr(err)

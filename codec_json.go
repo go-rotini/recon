@@ -6,13 +6,12 @@ import (
 	"fmt"
 )
 
-// jsonCodec is the bundled encoding/json codec. JSON numbers decode
-// as float64; callers that need int-typed access should use Get[int]
-// or [Bind] into an int-typed field.
+// jsonCodec is the bundled encoding/json codec.
 type jsonCodec struct{}
 
-// JSON is the [Codec] for application/json. Registered in the default
-// codec set by [New].
+// JSON is the [Codec] for JSON documents, part of [DefaultCodecs]. JSON
+// numbers decode as float64 ([FloatKind]), so Get[int] rejects them;
+// [Registry.Bind] into an integer field converts whole numbers.
 var JSON Codec = jsonCodec{}
 
 func (jsonCodec) Name() string         { return FormatJSON }

@@ -21,7 +21,8 @@ type decodeOptions struct {
 // customDecoderFn is the type-erased shape [WithCustomDecoder] stores.
 type customDecoderFn func(Value) (any, error)
 
-// WithDecodeStrict turns on strict decoding for this call.
+// WithDecodeStrict turns on strict decoding (see [WithStrict]) for this
+// call.
 func WithDecodeStrict() DecodeOption {
 	return func(o *decodeOptions) { t := true; o.strict = &t }
 }

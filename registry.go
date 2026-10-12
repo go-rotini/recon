@@ -54,7 +54,7 @@ type registryState struct {
 // the registry's mutex, rebuild the snapshot, and atomic-store.
 //
 // Close the Registry when no longer needed to release source resources
-// and the Events channel. [Sub] returns a *Registry that shares state
+// and the Events channel. [Registry.Sub] returns a *Registry that shares state
 // with its parent but resolves keys under a prefix; closing the parent
 // invalidates every sub view.
 type Registry struct {
@@ -66,12 +66,15 @@ type Registry struct {
 // build. Sources in [WithSource] / [WithSources] are added in argument
 // order, first being highest precedence.
 //
-// The returned Registry is functional even when the error is non-nil,
-// enabling tests that assert "this registration would have failed"
-// while still inspecting the registry. Production callers should treat
-// any non-nil error as a hard stop.
+// An invalid option (such as a [WithSchema] schema that fails to
+// compile) returns a nil Registry. A source that cannot be added is
+// returned as the error alongside a usable Registry holding the
+// sources before it; treat any non-nil error as fatal. If the first
+// snapshot fails schema validation, New logs a warning,
+// returns a nil error, and the Registry starts with no snapshot (every
+// key reads as unset) until a later rebuild succeeds.
 //
-// The registry's codec set (used by `format=` struct tags and [Save])
+// The registry's codec set (used by `format=` struct tags and [Registry.Save])
 // is [DefaultCodecs] unless an option replaces it. Use [NewWithCodecs]
 // to link only the codecs a program uses.
 func New(opts ...Option) (*Registry, error) {
@@ -183,8 +186,10 @@ func (r *Registry) Close() error {
 }
 
 // Events returns the channel reload events are delivered on. Each
-// reload — successful or failed — produces one [Event]; failures
-// retain the previous snapshot and surface via [Event.Err]. The channel
+// reload the watch engine runs (after a watched source changes or a
+// [WithPoll] tick) produces one [Event], successful or failed; failures
+// retain the previous snapshot and surface via [Event.Err]. Calls to
+// [Registry.Reload] and the write methods produce no Event. The channel
 // is buffered (capacity from [WithEventBufferSize], default 16). Slow
 // consumers cause drops surfaced on the next deliverable Event's
 // Warnings. Returns nil for a registry built [WithoutWatch].
@@ -195,12 +200,17 @@ func (r *Registry) Events() <-chan Event {
 	return r.state.watch.events
 }
 
-// Reload re-reads every watched source and rebuilds the snapshot.
+// Reload rebuilds the snapshot from every source's current contents.
+// It does not make sources re-read their backing store: a
+// [FileSource] re-reads on [FileSource.Reload] or a watcher event, a
+// [RemoteSource] on [RemoteSource.Refresh] or its watch. The rebuild
+// runs the immutable and schema checks; on failure the previous
+// snapshot stays and the error is returned.
 func (r *Registry) Reload() error { return r.ReloadContext(context.Background()) }
 
-// ReloadContext is the context-aware [Reload]. The context flows to
-// remote backends during their refresh call; in-memory sources ignore
-// it. A canceled ctx aborts and returns ctx.Err() wrapped.
+// ReloadContext is [Registry.Reload] that first checks ctx: a nil ctx
+// returns [ErrNilContext] and a done ctx returns its error wrapped.
+// ctx is not passed to sources.
 func (r *Registry) ReloadContext(ctx context.Context) error {
 	if r.state.closed.Load() {
 		return ErrRegistryClosed
@@ -241,7 +251,7 @@ func (r *Registry) AddSource(s Source) error {
 
 // InsertSource registers s at precedence index at (0 = highest). An
 // out-of-range index is clamped to [0, len(sources)]. Same conflict
-// and transactional semantics as [AddSource].
+// and transactional semantics as [Registry.AddSource].
 func (r *Registry) InsertSource(at int, s Source) error {
 	if r.state.closed.Load() {
 		return ErrRegistryClosed
@@ -560,9 +570,9 @@ func (r *Registry) queueWarning(w DeprecationWarning) {
 }
 
 // DrainWarnings returns and clears the pending warning queue. The
-// watch engine drains the same queue on every event emit; callers that
-// run [Bind] without live reload use this to surface deprecations
-// directly. Returns nil when empty.
+// watch engine drains the same queue into each reload [Event]; callers
+// that run [Registry.Bind] without live reload use this to surface
+// deprecations directly. Returns nil when empty.
 func (r *Registry) DrainWarnings() []DeprecationWarning {
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
@@ -594,7 +604,8 @@ func (r *Registry) markImmutable(path Path, baseline Value) {
 	r.state.immutableBaseline[pathStr] = baseline
 }
 
-// IsImmutable reports whether path has an immutable baseline recorded.
+// IsImmutable reports whether key has an immutable baseline, recorded
+// when a bind found a value for an `immutable`-tagged field.
 func (r *Registry) IsImmutable(key string) bool {
 	if r.state.closed.Load() {
 		return false

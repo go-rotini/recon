@@ -79,8 +79,9 @@ func (c *Codecs) ByName(name string) (Codec, bool) {
 }
 
 // ByExtension returns the codec whose [Codec.Extensions] includes ext
-// (case-insensitive, ext should include the leading dot). On miss,
-// the package-wide [DetectFormat] fallback is consulted.
+// (case-insensitive, ext should include the leading dot). On a miss it
+// maps ext to a canonical name as [DetectFormat] does and returns the
+// codec registered under that name.
 func (c *Codecs) ByExtension(ext string) (Codec, bool) {
 	ext = strings.ToLower(ext)
 	c.mu.RLock()

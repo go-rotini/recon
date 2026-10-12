@@ -17,10 +17,8 @@ type BufferSource struct {
 // [WithBufferCodec] and returns a Source named name. The format string
 // is recorded for diagnostics but does not drive decoding.
 //
-// Returns wrapped [ErrUnsupportedFormat] when no codec is supplied.
-// Source construction has no access to the registry's codec set, so
-// callers must pass the codec explicitly or use a format-named
-// constructor ([NewYAMLSource], etc.) for files.
+// Returns wrapped [ErrUnsupportedFormat] when no codec is supplied,
+// and a [*ParseError] when decoding fails.
 func NewBufferSource(name, format string, data []byte, opts ...BufferOption) (Source, error) {
 	cfg := bufferOptions{}
 	for _, opt := range opts {

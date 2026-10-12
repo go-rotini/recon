@@ -44,8 +44,8 @@ type registryOptions struct {
 }
 
 // defaultRegistryOptions returns the construction defaults:
-// case-sensitive keys, [FailCollect], 50ms reload debounce, 16-event
-// buffer, [MergeShadow], "***" secret redactor.
+// [FailCollect], 50ms reload debounce, 16-event buffer, [MergeShadow],
+// "***" secret redactor.
 func defaultRegistryOptions() registryOptions {
 	return registryOptions{
 		errorBehavior:  FailCollect,
@@ -87,19 +87,20 @@ func WithPrecedence(order ...string) Option {
 	return func(o *registryOptions) { o.precedence = append([]string(nil), order...) }
 }
 
-// WithStrict enables strict-mode decoding: unknown keys and ambiguous
-// coercions become errors.
+// WithStrict makes every [Registry.Bind] strict by default: each key
+// under the bind's prefix that no field consumed is reported as an
+// [*UnknownKeyError]. [WithDecodeLenient] turns it off per call.
 func WithStrict() Option {
 	return func(o *registryOptions) { o.strict = true }
 }
 
-// WithLenient is the explicit opt-out from strict mode (default).
+// WithLenient turns strict binding off, the default.
 func WithLenient() Option {
 	return func(o *registryOptions) { o.strict = false }
 }
 
 // WithErrorBehavior controls per-field error aggregation during
-// [Bind] / [Unmarshal]. See [ErrorBehavior].
+// [Registry.Bind] and [Registry.Unmarshal]. See [ErrorBehavior].
 func WithErrorBehavior(b ErrorBehavior) Option {
 	return func(o *registryOptions) { o.errorBehavior = b }
 }
@@ -110,8 +111,8 @@ func WithReloadDebounce(d time.Duration) Option {
 	return func(o *registryOptions) { o.reloadDebounce = d }
 }
 
-// WithEventBufferSize sets the capacity of the public Events channel.
-// Default 16.
+// WithEventBufferSize sets the capacity of the [Registry.Events]
+// channel. Default 16; n ≤ 0 is ignored.
 func WithEventBufferSize(n int) Option {
 	return func(o *registryOptions) {
 		if n > 0 {
@@ -120,19 +121,23 @@ func WithEventBufferSize(n int) Option {
 	}
 }
 
-// WithPoll polls non-[Watcher] sources at interval. Off by default.
+// WithPoll rebuilds the snapshot every interval when the registry has
+// a source that is not a [Watcher], first calling Refresh on those
+// with a Refresh() int method, such as [OSEnvSource.Refresh]. Off by
+// default.
 func WithPoll(interval time.Duration) Option {
 	return func(o *registryOptions) { o.pollInterval = interval }
 }
 
-// WithValidator installs a [SchemaValidator] run after every load.
+// WithValidator installs a [SchemaValidator] run on every snapshot
+// rebuild; a rejected rebuild keeps the previous snapshot.
 func WithValidator(v SchemaValidator) Option {
 	return func(o *registryOptions) { o.validator = v }
 }
 
 // WithSchema compiles schemaJSON via [NewJSONSchemaValidator] and
-// installs the result as the validator. A compile failure rides on
-// the options struct and is surfaced by [New]'s error return.
+// installs the result as the validator. A compile failure is returned
+// by [New] or [NewWithCodecs].
 //
 // Use [NewJSONSchemaValidatorYAML] / [NewJSONSchemaValidatorTOML] /
 // [NewJSONSchemaValidatorJSONC] with [WithValidator] for non-JSON
@@ -198,8 +203,8 @@ func (o *registryOptions) finishCodecs(base func() *Codecs) {
 	o.codecEdits = nil
 }
 
-// WithWatcher installs a registry-wide [WatcherFactory] used by
-// file-backed sources that don't ship their own. There is no default:
+// WithWatcher installs a registry-wide [WatcherFactory] for each
+// [FileSource] without its own [WithFileWatcher]. There is no default:
 // without one, file sources are read once and never watched. Use
 // fswatch.New() from github.com/go-rotini/recon/fswatch for kernel
 // notifications, or [NewPollWatcher] for a stdlib-only poller.
@@ -215,7 +220,8 @@ func WithoutWatch() Option {
 	return func(o *registryOptions) { o.noWatch = true }
 }
 
-// WithSecretRedactor replaces the default "***" redactor.
+// WithSecretRedactor replaces the default redactor, which renders every
+// secret value as "***". Nil is ignored.
 func WithSecretRedactor(fn func(string) string) Option {
 	return func(o *registryOptions) {
 		if fn != nil {
@@ -225,7 +231,7 @@ func WithSecretRedactor(fn func(string) string) Option {
 }
 
 // WithLogger installs the logger used for non-fatal diagnostics.
-// Default slog.Default().
+// Default [slog.Default].
 func WithLogger(l *slog.Logger) Option {
 	return func(o *registryOptions) { o.logger = l }
 }

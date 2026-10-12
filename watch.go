@@ -12,8 +12,8 @@ import (
 
 // watchEngine fans in [Watcher]-implementing sources, debounces their
 // [SourceChange] events, rebuilds the snapshot, and emits the result on
-// the channel returned by [Registry.Events]. Started by [Registry.New]
-// and stopped by [Registry.Close].
+// the channel returned by [Registry.Events]. Started by [New] and
+// [NewWithCodecs] and stopped by [Registry.Close].
 type watchEngine struct {
 	r       *Registry
 	ctx     context.Context

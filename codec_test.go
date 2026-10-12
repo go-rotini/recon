@@ -60,7 +60,7 @@ func assertFixtureMatches(t *testing.T, got map[string]any) {
 	}
 }
 
-// fakeCodec is a Phase-2 test double — Phase 4 introduces real codecs.
+// fakeCodec is a configurable [Codec] test double.
 type fakeCodec struct {
 	name string
 	exts []string

@@ -19,8 +19,8 @@ func NewJSONSource(path string, opts ...FileOption) (Source, error) {
 	return NewFileSource(path, append([]FileOption{WithFileCodec(JSON)}, opts...)...)
 }
 
-// NewJSONCSource is [NewFileSource] with the [JSONC] codec pinned.
-// Accepts both `.jsonc` and `.json5` files.
+// NewJSONCSource is [NewFileSource] with the [JSONC] codec pinned,
+// whatever the file's extension.
 func NewJSONCSource(path string, opts ...FileOption) (Source, error) {
 	return NewFileSource(path, append([]FileOption{WithFileCodec(JSONC)}, opts...)...)
 }

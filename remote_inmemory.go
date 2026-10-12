@@ -8,13 +8,13 @@ import (
 	"sync"
 )
 
-// MemoryBackend is the reference [RemoteBackend] implementation
-// shipped for tests and local prototyping. Production backends
-// (etcd, consul, vault) live in separate adapter modules.
+// MemoryBackend is an in-memory [RemoteBackend] for tests and local
+// prototyping.
 //
-// Implements [BackendWatcher] so [RemoteSource] sees a push-style
-// notification path; [Put] / [PutAll] / [Delete] fire every active
-// subscription. Safe for concurrent use.
+// It implements [BackendWatcher]: [MemoryBackend.Put],
+// [MemoryBackend.PutAll] and [MemoryBackend.Delete] notify every active
+// subscription. After [MemoryBackend.Close], writes are ignored. Safe
+// for concurrent use.
 type MemoryBackend struct {
 	mu     sync.RWMutex
 	data   map[string]string

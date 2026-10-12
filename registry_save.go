@@ -14,11 +14,11 @@ import (
 // returns a wrapped [ErrUnsupportedFormat] since an [io.Writer] has no
 // extension to detect from.
 //
-// Save / [SaveTo] / [SaveString] / [GenerateTemplate] differ in
-// destination: Save writes to any [io.Writer]; SaveTo writes to a
-// file path with atomic write-temp-then-rename; SaveString returns
-// the encoded form as a string; GenerateTemplate emits a stub
-// document with defaults included.
+// Save, [Registry.SaveTo], [Registry.SaveString] and
+// [Registry.GenerateTemplate] differ in destination: Save writes to any
+// [io.Writer]; SaveTo writes to a file path with atomic
+// write-temp-then-rename; SaveString returns the encoded form as a
+// string; GenerateTemplate returns the bytes with defaults included.
 //
 // Default policy is safe to pipe anywhere:
 //   - Secret-marked keys are redacted via [WithSecretRedactor] unless
@@ -27,8 +27,9 @@ import (
 //     is set.
 //   - [WithSaveOnly] limits output to a sub-tree.
 //
-// Save reads the current snapshot atomically; concurrent reloads do
-// not interleave with the encode.
+// Save encodes the whole registry, even on a [Registry.Sub] view. It
+// reads one snapshot, so concurrent reloads do not interleave with the
+// encode.
 func (r *Registry) Save(w io.Writer, opts ...SaveOption) error {
 	if err := r.validateNotClosed(); err != nil {
 		return err
@@ -41,10 +42,9 @@ func (r *Registry) Save(w io.Writer, opts ...SaveOption) error {
 	return r.encodeWith(w, cfg)
 }
 
-// SaveTo is the path-aware [Save]. The format is detected from path's
-// extension when [WithSaveFormat] is not supplied. The temp file lives
-// next to the target so the rename stays atomic across exotic
-// filesystems.
+// SaveTo is [Registry.Save] to a file. The format is detected from
+// path's extension when [WithSaveFormat] is not supplied. The bytes go
+// to a temp file next to path, which is then renamed over it.
 func (r *Registry) SaveTo(path string, opts ...SaveOption) error {
 	if err := r.validateNotClosed(); err != nil {
 		return err
@@ -187,7 +187,7 @@ func buildSavePayload(
 	return out
 }
 
-// SaveString returns the encoded form as a string.
+// SaveString is [Registry.Save] returning the encoded form as a string.
 func (r *Registry) SaveString(opts ...SaveOption) (string, error) {
 	var b strings.Builder
 	if err := r.Save(&b, opts...); err != nil {
@@ -196,8 +196,8 @@ func (r *Registry) SaveString(opts ...SaveOption) (string, error) {
 	return b.String(), nil
 }
 
-// GenerateTemplate emits a stub configuration document with defaults
-// included, encoded in format. Used to produce a starter config file.
+// GenerateTemplate encodes the current snapshot in format with
+// default-only keys included, for writing a starter config file.
 // Secret-marked keys are redacted unless [WithSaveIncludeSecrets].
 // Returns wrapped [ErrUnsupportedFormat] when format is unknown or
 // empty.
@@ -243,8 +243,9 @@ func (r *Registry) GenerateTemplate(format string, opts ...SaveOption) ([]byte, 
 	return b, nil
 }
 
-// TemplateKeys returns the sorted paths [GenerateTemplate] would
-// include with opts. Useful for `config init --keys` tooling.
+// TemplateKeys returns the sorted canonical paths of the current
+// snapshot, limited by [WithSaveOnly] (other options are ignored). The
+// paths keep the [WithSaveOnly] prefix.
 func (r *Registry) TemplateKeys(opts ...SaveOption) []Path {
 	if r.validateNotClosed() != nil {
 		return nil

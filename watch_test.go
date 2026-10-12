@@ -289,7 +289,7 @@ func TestWatchEngine_DropEventOnFullChannel(t *testing.T) {
 
 	// Step 2: consume the first (buffered) event, then trigger
 	// another change. The engine's next emit MUST attach a warning
-	// describing the drops that piled up during phase 1.
+	// describing the drops that piled up during step 1.
 	<-r.Events()
 	src.Trigger(map[string]any{"k": 99})
 

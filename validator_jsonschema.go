@@ -7,15 +7,15 @@ import (
 )
 
 // JSONSchemaValidator is the bundled [SchemaValidator] backed by
-// go-rotini/jsonschema. The schema is compiled once at construction;
-// per-snapshot validation is then cheap and lock-free.
+// go-rotini/jsonschema. The schema is compiled once at construction.
 type JSONSchemaValidator struct {
 	schema *jsonschema.Schema
 }
 
 // NewJSONSchemaValidator compiles schemaJSON and returns a validator
 // for [WithValidator]. Returns a wrapped [ErrSchemaInvalid] on
-// compile failure.
+// compile failure; the other NewJSONSchemaValidator* constructors do
+// the same.
 //
 // The NewJSONSchemaValidator* constructors never touch the network: a
 // $ref resolves within the schema or to an embedded meta-schema, and a
@@ -72,8 +72,9 @@ func NewJSONSchemaValidatorFromSchema(s *jsonschema.Schema) *JSONSchemaValidator
 
 // Validate runs snapshot through the compiled schema. On failure,
 // each constraint violation is translated into a [*ValidationError]
-// and aggregated under a [*MultiError]. A nil snapshot is treated as
-// the empty object.
+// and aggregated under a [*MultiError]; nested causes of compound
+// keywords (anyOf, oneOf, $ref) are not included. A nil snapshot is
+// treated as the empty object.
 func (v *JSONSchemaValidator) Validate(snapshot map[string]any) error {
 	if v == nil || v.schema == nil {
 		return nil

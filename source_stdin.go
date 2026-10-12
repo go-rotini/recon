@@ -8,8 +8,8 @@ import (
 
 // NewStdinSource reads os.Stdin to EOF, decodes the bytes through the
 // codec resolved from format (or [WithStdinCodec]), and returns a
-// [Source] holding the decoded map. The construction is one-shot — no
-// streaming, no incremental decode.
+// [Source] named "stdin" holding the decoded map. Stdin is read once,
+// at construction.
 //
 // Codec resolution: [WithStdinCodec] > codec named by format. A blank
 // format with no [WithStdinCodec] returns wrapped

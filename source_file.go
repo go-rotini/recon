@@ -19,9 +19,9 @@ import (
 // / [WithOptional] to express "look in N directories, expand ~, treat
 // missing as no-op" in one constructor.
 //
-// FileSource implements [Watcher] when a [WatcherFactory] is
-// available — either set per-source via [WithFileWatcher] or injected
-// by the registry from [WithWatcher].
+// FileSource is watched when a [WatcherFactory] is available, either
+// set per-source via [WithFileWatcher] or injected by the registry from
+// [WithWatcher].
 type FileSource struct {
 	*MapSource
 
@@ -129,7 +129,9 @@ func (s *FileSource) Format() string {
 
 // Reload re-reads the file and atomically swaps the underlying map.
 // On a missing-file outcome with [WithOptional], the source is emptied
-// without error. Decode failures retain the existing contents.
+// without error. Decode failures retain the existing contents. Reload
+// does not rebuild the registry's snapshot: a watched source's reload
+// does, otherwise call [Registry.Reload] afterwards.
 func (s *FileSource) Reload() error {
 	s.reload.Lock()
 	defer s.reload.Unlock()
@@ -152,12 +154,11 @@ func (s *FileSource) Reload() error {
 	return nil
 }
 
-// Watch returns a [SourceChange] channel for the underlying file. A
-// nil factory yields a closed channel so the optional-watch contract
-// on [Source] stays satisfiable.
+// Watch implements [Watcher] for the underlying file. Without a
+// [WatcherFactory] it returns a closed channel.
 //
-// Each upstream notification triggers a [Reload], then forwards a
-// [SourceChange] downstream.
+// Each upstream notification triggers a [FileSource.Reload], then
+// forwards a [SourceChange] carrying any reload error.
 func (s *FileSource) Watch(ctx context.Context) (<-chan SourceChange, error) {
 	factory := s.watcherFactory()
 	if factory == nil {
@@ -181,9 +182,9 @@ func (s *FileSource) watcherFactory() WatcherFactory {
 	return s.watcher
 }
 
-// SetWatcher attaches a [WatcherFactory] after construction. Used by
-// the registry to inject its registry-wide factory. Has no effect on a
-// running subscription.
+// SetWatcher attaches a [WatcherFactory] after construction. The
+// registry calls it to install the [WithWatcher] factory. Has no effect
+// on a running subscription.
 func (s *FileSource) SetWatcher(w WatcherFactory) {
 	s.reload.Lock()
 	defer s.reload.Unlock()

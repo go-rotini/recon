@@ -6,7 +6,7 @@ import "fmt"
 // above every source in the precedence chain.
 //
 // On a sub view, key is interpreted relative to the sub's prefix. Pass
-// nil to clear an override (equivalent to [Unset]). The snapshot is
+// nil to clear an override (equivalent to [Registry.Unset]). The snapshot is
 // rebuilt before Set returns; if the rebuild fails the immutable or
 // validator check, the override is rolled back and the error is
 // returned.
@@ -32,7 +32,7 @@ func (r *Registry) Set(key string, value any) error {
 
 // SetDefault installs a fallback value for key. Defaults sit below
 // every source — they apply only when no source (and no explicit
-// override) supplies the key. Same transactional semantics as [Set];
+// override) supplies the key. Same transactional semantics as [Registry.Set];
 // nil clears the default.
 func (r *Registry) SetDefault(key string, value any) error {
 	if err := r.validateNotClosed(); err != nil {
@@ -104,8 +104,9 @@ func (r *Registry) RegisterAlias(alias, canonical string) error {
 }
 
 // PinSource forces resolution of key to consult only the named source.
-// When pinned the source chain is skipped; if the pinned source has
-// no value, the key resolves to "not set" (no default fallback).
+// An explicit [Registry.Set] override still wins; otherwise the source
+// chain is skipped, and if the pinned source has no value the key
+// resolves to "not set" (no default fallback).
 //
 // Returns [*SourceError] when sourceName isn't registered.
 // Transactional rollback on rebuild failure.

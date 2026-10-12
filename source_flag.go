@@ -11,9 +11,9 @@ import (
 // caller's side.
 //
 // An adapter must distinguish flags the user explicitly set from
-// those still holding compile-time defaults. Flags occupy the
-// second-highest precedence layer, so reporting an unset flag would
-// shadow lower-precedence sources unconditionally.
+// those still holding compile-time defaults. A flag source usually
+// sits first in the precedence order, so reporting an unset flag would
+// shadow every lower-precedence source.
 type FlagAdapter interface {
 	// Names returns the names of flags the user explicitly set, in
 	// any order. The returned slice may alias the adapter's storage;
@@ -25,9 +25,11 @@ type FlagAdapter interface {
 	Lookup(name string) (value any, set bool)
 }
 
-// FlagSource is a [Source] backed by a [FlagAdapter]. Pair with
-// [WithFlagPathTransform] to map flag names like "--server-port" onto
-// recon paths like "server.port".
+// FlagSource is a [Source] backed by a [FlagAdapter]. By default a
+// flag name, minus any leading "-" or "--", is parsed as a dotted path,
+// so "server.port" maps to Path{"server", "port"} and "server-port" to
+// a single segment. Pair with [WithFlagPathTransform] to map names like
+// "server-port" onto "server.port".
 type FlagSource struct {
 	adapter   FlagAdapter
 	name      string

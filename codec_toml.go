@@ -9,8 +9,7 @@ import (
 
 type tomlCodec struct{}
 
-// TOML is the [Codec] for TOML documents. Registered in the default
-// codec set by [New].
+// TOML is the [Codec] for TOML documents, part of [DefaultCodecs].
 var TOML Codec = tomlCodec{}
 
 func (tomlCodec) Name() string         { return FormatTOML }

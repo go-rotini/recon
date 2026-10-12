@@ -9,13 +9,23 @@ import (
 // Bind populates target from the current snapshot. target must be a
 // non-nil pointer to a struct. Errors aggregate into a [*MultiError]
 // under [FailCollect] (the default) or short-circuit on the first
-// under [FailFast]. Tag grammar lives on [FieldTag].
+// under [FailFast]; a single error is returned unwrapped. Tag grammar
+// lives on [FieldTag].
+//
+// String values are converted to the field's type: integers follow
+// [strconv.ParseInt] with base 0, so "0x10" is 16, "010" is 8 and
+// "1_000" is 1000; floats use [strconv.ParseFloat], bools
+// [strconv.ParseBool], and durations [time.ParseDuration]. A string
+// field takes a non-string value's fmt.Sprint form. Slices and maps
+// split strings on the `separator=` and `kvSeparator=` tag options.
+// A field whose type implements [Unmarshaler], UnmarshalEnv(string)
+// error, or [encoding.TextUnmarshaler] decodes itself, in that order.
 func (r *Registry) Bind(target any, opts ...DecodeOption) error {
 	return r.BindContext(context.Background(), target, opts...)
 }
 
-// BindContext is the context-aware [Bind]. ctx is threaded into any
-// [ValidatorContext] hook the target implements.
+// BindContext is [Registry.Bind] with ctx passed to the target's
+// [ValidatorContext] hook, unless [WithDecodeContext] overrides it.
 func (r *Registry) BindContext(ctx context.Context, target any, opts ...DecodeOption) error {
 	if err := r.validateNotClosed(); err != nil {
 		return err
@@ -70,7 +80,7 @@ func (r *Registry) Unmarshal(target any, opts ...DecodeOption) error {
 
 // UnmarshalKey binds the registry's sub-tree at key into target —
 // equivalent to r.Sub(key).Bind(target, opts...). An empty key is
-// equivalent to [Bind].
+// equivalent to [Registry.Bind].
 func (r *Registry) UnmarshalKey(key string, target any, opts ...DecodeOption) error {
 	if key == "" {
 		return r.Bind(target, opts...)
@@ -106,8 +116,9 @@ func (r *Registry) buildDecodeOptions(ctx context.Context, opts []DecodeOption) 
 }
 
 // Unmarshaler is the optional decode hook a bind-target field may
-// implement to take over its own decoding. coerce tries [Unmarshaler]
-// first, then UnmarshalEnv, then encoding.TextUnmarshaler.
+// implement to take over its own decoding. It receives the resolved
+// [Value] with its wire kind intact and takes priority over
+// UnmarshalEnv and [encoding.TextUnmarshaler].
 type Unmarshaler interface {
 	UnmarshalRecon(v Value) error
 }

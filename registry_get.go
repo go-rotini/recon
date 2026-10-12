@@ -47,14 +47,17 @@ func (r *Registry) GetString(key string) (string, bool, error) {
 	return s, true, nil
 }
 
-// GetInt returns the value at key as int. Wraps int64 → int without
-// overflow check; 32-bit-target callers should prefer [GetInt64].
+// GetInt returns the value at key as int, converting from int64
+// without an overflow check; on 32-bit targets prefer
+// [Registry.GetInt64].
 func (r *Registry) GetInt(key string) (int, bool, error) {
 	i64, ok, err := r.GetInt64(key)
 	return int(i64), ok, err
 }
 
-// GetInt64 returns the value at key as int64.
+// GetInt64 returns the value at key as int64. The value must be
+// [IntKind]: strings are not parsed and floats are not converted (both
+// return [ErrTypeMismatch]); use [Registry.Bind] for conversion.
 func (r *Registry) GetInt64(key string) (int64, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
@@ -67,7 +70,8 @@ func (r *Registry) GetInt64(key string) (int64, bool, error) {
 	return i, true, nil
 }
 
-// GetFloat returns the value at key as float64.
+// GetFloat returns the value at key as float64. [FloatKind] and
+// [IntKind] values are accepted; strings are not parsed.
 func (r *Registry) GetFloat(key string) (float64, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
@@ -80,7 +84,8 @@ func (r *Registry) GetFloat(key string) (float64, bool, error) {
 	return f, true, nil
 }
 
-// GetBool returns the value at key as bool.
+// GetBool returns the value at key as bool. The value must be
+// [BoolKind]; strings are not parsed.
 func (r *Registry) GetBool(key string) (bool, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
@@ -94,8 +99,8 @@ func (r *Registry) GetBool(key string) (bool, bool, error) {
 }
 
 // GetDuration returns the value at key as time.Duration. A native
-// time.Duration value or a string parseable by time.ParseDuration is
-// accepted.
+// time.Duration, a string parseable by [time.ParseDuration], or an
+// integer number of nanoseconds is accepted.
 func (r *Registry) GetDuration(key string) (time.Duration, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
@@ -220,9 +225,12 @@ func (r *Registry) AllKeys() []string {
 }
 
 // Get is the generic typed accessor. Supported T: string, bool, int,
-// int64, float64, time.Time, time.Duration, []string, [Value].
-// Unsupported types return wrapped [ErrTypeMismatch]; callers wanting
-// struct binding should use [Registry.Bind].
+// int64, float64, time.Time, time.Duration, []string, [Value]. T must
+// match the value's wire kind as the matching [Value] As* method
+// requires: only time.Time and time.Duration are parsed from strings,
+// so an environment variable read as int returns [ErrTypeMismatch].
+// Unsupported types also return wrapped [ErrTypeMismatch]. Use
+// [Registry.Bind] for string conversion and struct binding.
 func Get[T any](r *Registry, key string) (T, bool, error) {
 	var zero T
 	v, ok, err := r.Get(key)
@@ -236,8 +244,8 @@ func Get[T any](r *Registry, key string) (T, bool, error) {
 	return out, true, nil
 }
 
-// MustGet panics on error or not-set. Useful in main() when a missing
-// key is a programmer error.
+// MustGet is [Get] that panics on error, or with [ErrKeyNotFound] when
+// the key is not set.
 func MustGet[T any](r *Registry, key string) T {
 	v, ok, err := Get[T](r, key)
 	switch {

@@ -8,12 +8,13 @@ import (
 )
 
 // jsoncCodec wraps go-rotini/jsonc (JSON with comments and trailing
-// commas). The codec also advertises ".json5" because the sibling
-// parser accepts JSON5's relaxed grammar.
+// commas).
 type jsoncCodec struct{}
 
-// JSONC is the [Codec] for JSONC / JSON5 documents. Registered in
-// the default codec set by [New].
+// JSONC is the [Codec] for JSONC documents (JSON with comments and
+// trailing commas), part of [DefaultCodecs]. It also claims the ".json5"
+// extension, but parses such files as JSONC: the rest of JSON5
+// (unquoted keys, single-quoted strings and so on) is rejected.
 var JSONC Codec = jsoncCodec{}
 
 func (jsoncCodec) Name() string         { return FormatJSONC }

@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-// TestFormatRoundtripMatrix is the §8.3 format-roundtrip matrix.
+// TestFormatRoundtripMatrix is the format-roundtrip matrix.
 //
-// Per the spec: "Load fixture in format A → Save as format B → reload →
-// assert structural equivalence." The flow is bytes_A → mapA → bytes_B →
+// Each case loads a fixture in format A, saves it as format B, reloads it
+// and asserts structural equivalence. The flow is bytes_A → mapA → bytes_B →
 // mapB; A and B never see each other's serialized form directly.
 //
 // Dotenv is the asymmetric format — it cannot encode nested values —
@@ -83,8 +83,8 @@ func TestFormatRoundtripFlatDotenv(t *testing.T) {
 	}
 }
 
-// TestRoundtrip_KeysPreserved is a §8.3 sub-assertion: "every key in
-// the loaded value round-trips." It rebuilds the encoded result and
+// TestRoundtrip_KeysPreserved checks that every key in
+// the loaded value round-trips. It rebuilds the encoded result and
 // compares the sorted key list against the original.
 func TestRoundtrip_KeysPreserved(t *testing.T) {
 	src := map[string]any{
@@ -113,9 +113,9 @@ func TestRoundtrip_KeysPreserved(t *testing.T) {
 	}
 }
 
-// TestRoundtrip_FailuresAreExplicit covers §8.3's "no silent data
-// loss" requirement: a codec that cannot represent the input returns
-// an error rather than dropping data.
+// TestRoundtrip_FailuresAreExplicit checks that there is no silent data
+// loss: a codec that cannot represent the input returns an error rather
+// than dropping data.
 func TestRoundtrip_FailuresAreExplicit(t *testing.T) {
 	// Dotenv cannot represent nested values; encode must fail.
 	_, err := Dotenv.Encode(map[string]any{

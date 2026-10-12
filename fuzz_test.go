@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// FuzzParsePath is the §8.6 fuzz target for [ParsePath]. The
+// FuzzParsePath fuzzes [ParsePath]. The
 // invariant: ParsePath never returns an error and never panics for
 // any byte sequence. Additionally, an empty input yields an empty
 // path, and a single delimiter character only yields exactly two

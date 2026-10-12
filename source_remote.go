@@ -11,13 +11,13 @@ import (
 )
 
 // RemoteBackend is the contract an out-of-process configuration store
-// satisfies. Real adapters (etcd, consul, vault, AWS SSM, k8s) live in
-// separate modules and depend on this interface. The core ships only
-// the interface plus [NewInMemoryBackend] for tests.
+// satisfies; wrap one with [NewRemoteSource]. Recon ships no adapter
+// for a real store, only [NewInMemoryBackend] for tests.
 //
-// Backends are string-keyed and string-valued. Adapters with
-// structured payloads should pre-serialize values and rely on the
-// `format=` bind tag for per-field re-decoding.
+// Backends are string-keyed and string-valued, with "/" separating
+// path segments in keys. Adapters with structured payloads should
+// pre-serialize values and rely on the `format=` bind tag for
+// per-field re-decoding.
 type RemoteBackend interface {
 	// List enumerates every key under prefix. An empty prefix lists
 	// every key.
@@ -44,9 +44,9 @@ type BackendWatcher interface {
 // reads every key under the configured prefix and caches the result;
 // subsequent Get calls hit the cache.
 //
-// Live reload: subscribes to [BackendWatcher] when available;
-// otherwise polls at the [WithRemotePollInterval] cadence (default
-// off — opt in by setting an interval).
+// Live reload: when the registry watches it, the source re-reads the
+// backend on each [BackendWatcher] notification, or otherwise every
+// [WithRemotePollInterval] (off by default).
 type RemoteSource struct {
 	name    string
 	backend RemoteBackend
@@ -138,12 +138,16 @@ func (s *RemoteSource) Close() error {
 	return s.backend.Close()
 }
 
-// Refresh re-reads the backend, replacing the cache atomically.
+// Refresh re-reads the backend, replacing the cache atomically. It
+// does not rebuild the registry's snapshot; call [Registry.Reload]
+// afterwards. On error the cache is unchanged.
 func (s *RemoteSource) Refresh(ctx context.Context) error { return s.refresh(ctx) }
 
-// Watch implements [Watcher]. Emits a [SourceChange] on every
-// backend-reported activity. A source with neither a [BackendWatcher]
-// backend nor a configured poll interval returns a closed channel.
+// Watch implements [Watcher]. It refreshes the cache and emits a
+// [SourceChange] on every [BackendWatcher] notification, or on each
+// poll tick that finds the data changed. A source with neither a
+// [BackendWatcher] backend nor a poll interval returns a closed
+// channel.
 func (s *RemoteSource) Watch(ctx context.Context) (<-chan SourceChange, error) {
 	if bw, ok := s.backend.(BackendWatcher); ok {
 		return s.watchPush(ctx, bw)

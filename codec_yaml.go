@@ -12,7 +12,7 @@ import (
 type yamlCodec struct{}
 
 // YAML is the [Codec] for YAML 1.2.2 documents (and the KYAML strict
-// subset). Registered in the default codec set by [New].
+// subset), part of [DefaultCodecs].
 var YAML Codec = yamlCodec{}
 
 func (yamlCodec) Name() string         { return FormatYAML }

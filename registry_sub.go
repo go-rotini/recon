@@ -1,8 +1,10 @@
 package recon
 
-// Sub returns a [Registry] view rooted at prefix. Reads, writes, and
-// introspection on the returned registry operate on keys relative to
-// prefix.
+// Sub returns a [Registry] view rooted at prefix. Reads, writes, binds,
+// [Registry.AllKeys] and [Registry.DescribeKey] on the returned registry
+// take keys relative to prefix. [Registry.Describe], [Registry.Snapshot],
+// the Save methods and source management still cover the whole
+// registry.
 //
 // Sub views share state with the parent: no snapshot copy, no source
 // duplication. A reload on the parent is visible to the sub

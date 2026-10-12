@@ -21,9 +21,9 @@ var reservedSourceNames = map[string]struct{}{
 }
 
 // Snapshot is the immutable, fully-resolved view of a [Registry] at one
-// point in time. It is atomic-stored on the registry; once a caller
-// holds a *Snapshot, the underlying data never mutates. Construct via
-// [buildSnapshot] — callers do not construct Snapshots directly.
+// point in time. Once a caller holds a *Snapshot, its data never
+// changes. Obtain one from [Registry.Snapshot]; the methods are safe on
+// a nil *Snapshot.
 type Snapshot struct {
 	// values maps canonical path string to resolved Value. Alias paths
 	// are pre-resolved at build time so values[alias] == values[canon].
@@ -182,9 +182,8 @@ type snapshotInputs struct {
 // frozen *Snapshot.
 //
 // Resolution order per canonical key: explicit > pinned-source > sources
-// in precedence order > default. Source-side errors during candidate
-// resolution are dropped here; [Registry.rebuildSnapshotLocked]
-// surfaces them through the configured [ErrorBehavior].
+// in precedence order > default. A source whose Get returns an error is
+// treated as not having the key; the error is not reported.
 func buildSnapshot(is snapshotInputs) *Snapshot {
 	s := &Snapshot{
 		values:      map[string]Value{},

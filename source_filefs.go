@@ -12,7 +12,9 @@ import (
 // for shipping a default config embedded in the binary and overlaying
 // a user-supplied file on top via precedence.
 //
-// Read-only: no [Reload], no [Watcher] — embedded files don't change.
+// It is read once: it has no Reload method and is not a [Watcher].
+// Path expansion and [WithSearchPaths] do not apply; a leading "/" in
+// the path is dropped, since [io/fs.FS] paths are relative.
 type FileSourceFS struct {
 	*MapSource
 

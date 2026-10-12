@@ -12,8 +12,8 @@ import (
 // Encode rejects nested input.
 type dotenvCodec struct{}
 
-// Dotenv is the [Codec] for `.env` files. Registered in the default
-// codec set by [New].
+// Dotenv is the [Codec] for `.env` files, part of [DefaultCodecs]. It
+// decodes to one flat level of string values.
 var Dotenv Codec = dotenvCodec{}
 
 func (dotenvCodec) Name() string         { return FormatDotenv }

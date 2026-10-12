@@ -16,7 +16,7 @@ import "strings"
 type KeyTransform func(p Path) string
 
 // SnakeUpperTransform projects Path{"server","port"} to "SERVER_PORT".
-// The default for env-backed sources. Path segments keep their
+// The default for [OSEnvSource]. Path segments keep their
 // internal characters; only the separator is replaced with "_" and the
 // whole result is uppercased.
 func SnakeUpperTransform(p Path) string {
@@ -41,8 +41,7 @@ func SnakeUpperPrefixTransform(prefix string) KeyTransform {
 	}
 }
 
-// KebabTransform projects Path{"server","port"} to "server-port". The
-// default for CLI-flag sources.
+// KebabTransform projects Path{"server","port"} to "server-port".
 func KebabTransform(p Path) string {
 	if len(p) == 0 {
 		return ""
