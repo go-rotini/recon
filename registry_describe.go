@@ -35,7 +35,11 @@ type KeyDescription struct {
 	// Aliases lists every alias path that resolves to this key.
 	Aliases []Path
 
-	// Schema is always empty: Describe does not fill it.
+	// Schema is always empty.
+	//
+	// Deprecated: a [SchemaValidator] does not expose its schema, so
+	// Describe has nothing to fill it with. Read the schema from where
+	// the validator was built.
 	Schema string
 }
 

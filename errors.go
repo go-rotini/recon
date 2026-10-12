@@ -38,8 +38,11 @@ var (
 	ErrCoercion = errors.New("recon: coercion failed")
 
 	// ErrReadOnlySource reports a write attempted against a read-only
-	// source. Recon itself never returns it; it is there for custom
-	// [Source] implementations.
+	// source.
+	//
+	// Deprecated: recon never writes to a source, so nothing in recon
+	// returns it. A custom [Source] with its own write path should
+	// define its own error.
 	ErrReadOnlySource = errors.New("recon: source is read-only")
 
 	// ErrAliasCycle is returned when [Registry.RegisterAlias] would
@@ -380,10 +383,12 @@ func (e *ParseError) Unwrap() error { return e.Cause }
 
 // DeprecationWarning is a non-fatal notice that a source supplied a
 // `deprecated`-tagged key during a bind. Message is the `deprecated=`
-// tag value, or a generic message when the tag has none; recon never
-// sets Replacement. Delivered on [Event.Warnings] and via
-// [Registry.DrainWarnings]. The watch engine also uses it, with an
-// empty Path, to report Events dropped because the channel was full.
+// tag value, or a generic message when the tag has none. The tag has
+// no replacement form, so Replacement is left for callers that build
+// their own warnings. Delivered on [Event.Warnings] and via
+// [Registry.DrainWarnings]. The watch engine and [Live] also use it,
+// with an empty Path, to report events dropped because a channel was
+// full.
 type DeprecationWarning struct {
 	Path        Path
 	Source      string
@@ -391,8 +396,12 @@ type DeprecationWarning struct {
 	Message     string
 }
 
-// String renders the warning on one line.
+// String renders the warning on one line. A warning with an empty Path
+// renders as its Message.
 func (w DeprecationWarning) String() string {
+	if len(w.Path) == 0 {
+		return w.Message
+	}
 	out := fmt.Sprintf("recon: %s is deprecated", w.Path)
 	if w.Source != "" {
 		out += fmt.Sprintf(" (source %q)", w.Source)
@@ -400,8 +409,14 @@ func (w DeprecationWarning) String() string {
 	if len(w.Replacement) > 0 {
 		out += fmt.Sprintf("; use %s instead", w.Replacement)
 	}
-	if w.Message != "" {
+	if w.Message != "" && w.Message != genericDeprecationMessage(w.Path) {
 		out += ": " + w.Message
 	}
 	return out
+}
+
+// genericDeprecationMessage is the Message of a warning whose
+// `deprecated` tag carries no text.
+func genericDeprecationMessage(p Path) string {
+	return "recon: key " + p.String() + " is deprecated"
 }

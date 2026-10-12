@@ -3,6 +3,7 @@ package recon
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,10 +16,10 @@ import (
 //
 // Construct via [NewLive]; close via [Live.Close] when done. Live
 // spawns one goroutine that consumes [Registry.Events] until Close
-// or until the parent's channel closes. That goroutine forwards each
-// event to [Live.Events] and waits for it to be received, so a caller
-// that does not drain [Live.Events] stops further rebinds once its
-// one-slot buffer is full.
+// or until the parent's channel closes. That goroutine rebinds on each
+// event and forwards it to [Live.Events] without blocking: when the
+// one-slot buffer is full the event is dropped, rebinding continues,
+// and the next delivered event carries a warning counting the drops.
 type Live[T any] struct {
 	reg     *Registry
 	decode  func() (*T, error)
@@ -27,6 +28,9 @@ type Live[T any] struct {
 	stop    chan struct{}
 	stopped atomic.Bool
 	once    sync.Once
+	// dropped counts events Live.Events could not absorb; the next
+	// delivered event reports them as a warning.
+	dropped atomic.Int64
 	// lastErr captures the most recent rebind failure; successful
 	// rebinds clear it.
 	lastErr atomic.Pointer[error]
@@ -86,9 +90,10 @@ func (l *Live[T]) Get() *T {
 
 // Events returns the channel of every reload [Event] Live observed,
 // with Err set when the rebind failed and Time set to when Live
-// handled it. It has a one-slot buffer and must be drained (see
-// [Live]). Closed by [Live.Close] or when the parent's Events channel
-// closes.
+// handled it. It has a one-slot buffer; events that arrive while it is
+// full are dropped and counted in a warning on the next delivered
+// event (see [Live]). Closed by [Live.Close] or when the parent's
+// Events channel closes.
 func (l *Live[T]) Events() <-chan Event { return l.events }
 
 // LastError returns the error of the most recent reload or rebind, or
@@ -142,9 +147,30 @@ func (l *Live[T]) handle(evt Event) {
 		l.recordErr(evt.Err)
 	}
 	out.Time = time.Now()
+	l.emit(out)
+}
+
+// emit delivers evt without blocking. A full channel drops evt; the
+// drop count rides on the next event that gets through, as a
+// [DeprecationWarning] with an empty Path (matching [Registry.Events]).
+func (l *Live[T]) emit(evt Event) {
+	if dropped := l.dropped.Load(); dropped > 0 {
+		noun := "events were"
+		if dropped == 1 {
+			noun = "event was"
+		}
+		evt.Warnings = append(slices.Clip(evt.Warnings), DeprecationWarning{
+			Path: Path{},
+			Message: fmt.Sprintf(
+				"recon: %d reload %s dropped because the Live Events channel was full",
+				dropped, noun),
+		})
+	}
 	select {
-	case l.events <- out:
-	case <-l.stop:
+	case l.events <- evt:
+		l.dropped.Store(0)
+	default:
+		l.dropped.Add(1)
 	}
 }
 

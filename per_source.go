@@ -56,7 +56,8 @@ func (p PerSource[T]) BySource(name string) ValueSource[T] {
 
 // PerSourceFor returns the per-source view of key. Every source is
 // consulted once and the result is coerced into T using the same
-// rules [Get] follows.
+// rules [Get] follows. An alias key is first resolved to its
+// canonical path, as [Get] resolves it.
 //
 // A source without the key reports IsSet=false. A source whose value
 // cannot be coerced into T, or whose Get fails, reports IsSet=true
@@ -71,11 +72,10 @@ func PerSourceFor[T any](r *Registry, key string) (PerSource[T], error) {
 	if err := r.validateNotClosed(); err != nil {
 		return PerSource[T]{}, err
 	}
-	fullKey := r.fullKey(key)
-	path := ParsePath(fullKey)
-	canon := resolveAliasChain(fullKey, r.snapshotAliases())
+	canon := resolveAliasChain(r.fullKey(key), r.snapshotAliases())
+	path := ParsePath(canon)
 
-	out := PerSource[T]{Path: ParsePath(canon)}
+	out := PerSource[T]{Path: path}
 
 	r.state.mu.Lock()
 	sources := append([]Source(nil), r.state.sources...)

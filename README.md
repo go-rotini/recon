@@ -26,7 +26,7 @@ This package is used as the default configuration and data-in package for [rotin
 - Built-in support for `time.Duration`, `time.Time`, `[]byte` (raw / base64 / hex), arrays and maps
 - Multi-named-config orchestration: `Configs` holds named registries (per the rotini spec's `configuration_files[]`) and multiplexes their events through a single `<-chan NamedEvent`
 - `io/fs.FS`-backed `NewFileSourceFS` for testing with `testing/fstest.MapFS` and for loading from `embed.FS` bundles
-- Remote-backend adapters (etcd / consul / vault / awsssm / k8s) live in their own modules — opt-in by `go get`; the core ships `NewInMemoryBackend` as a reference and for tests
+- Remote key-value stores plug in through the `RemoteBackend` interface and `NewRemoteSource`; recon ships no store-specific adapters, only `NewInMemoryBackend` as a reference implementation and for tests
 - Minimal third-party footprint: composes the go-rotini family
 - Link only the formats you read: `NewWithCodecs`, `NewFileSourceWithCodecs`, `NewFileSourceFSWithCodecs` and `NewStdinSourceWithCodecs` take an explicit codec set, so a program that sticks to them links no other codec
 
@@ -212,7 +212,7 @@ r, err := recon.New(
 )
 ```
 
-Validation failures during reload are reported on the `Registry.Events()` channel and via `Live.LastError()`; the previous snapshot is retained so live config keeps working. For per-struct validation, implement `Validator` (or `ValidatorContext`) on the bind target — the decoder calls it after every field is populated.
+If the first snapshot holds values and fails validation, `New` returns the error. Validation failures during reload are reported on the `Registry.Events()` channel and via `Live.LastError()`; the previous snapshot is retained so live config keeps working. For per-struct validation, implement `Validator` (or `ValidatorContext`) on the bind target — the decoder calls it after every field is populated.
 
 ## Multi-named configs (`Configs`)
 

@@ -33,9 +33,11 @@ type Source interface {
 }
 
 // Watcher is an optional [Source] capability. Sources implementing
-// Watcher participate in live reload: the registry subscribes once at
-// construction (sources added later are not subscribed) and fans every
-// emitted [SourceChange] into a single reload pipeline.
+// Watcher participate in live reload: the registry subscribes once when
+// the source is added (at construction, or by [Registry.AddSource] or
+// [Registry.InsertSource]), cancels the subscription on
+// [Registry.RemoveSource], and fans every emitted [SourceChange] into a
+// single reload pipeline.
 //
 // Implementations must honor ctx cancellation by closing the returned
 // channel and returning from any internal goroutine.

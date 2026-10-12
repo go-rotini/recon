@@ -70,9 +70,11 @@ type Registry struct {
 // compile) returns a nil Registry. A source that cannot be added is
 // returned as the error alongside a usable Registry holding the
 // sources before it; treat any non-nil error as fatal. If the first
-// snapshot fails schema validation, New logs a warning,
-// returns a nil error, and the Registry starts with no snapshot (every
-// key reads as unset) until a later rebuild succeeds.
+// snapshot holds values and fails schema validation, New returns the
+// validation error and a nil Registry; the sources are not closed and
+// stay the caller's. A first snapshot with no values is not refused,
+// so a registry can start empty under a schema that requires keys and
+// receive them through [Registry.Set].
 //
 // The registry's codec set (used by `format=` struct tags and [Registry.Save])
 // is [DefaultCodecs] unless an option replaces it. Use [NewWithCodecs]
@@ -141,7 +143,13 @@ func buildRegistry(options registryOptions) (*Registry, error) {
 		r.applyPrecedenceLocked(options.precedence)
 	}
 
-	r.rebuildAndReport()
+	// A rejected first snapshot that holds values fails New: returning
+	// a registry would hide every one of them. A rejected empty one
+	// does not, so values can still arrive later through Set.
+	if candidate, err := r.rebuildCandidateLocked(); err != nil && len(candidate.values) > 0 {
+		r.state.mu.Unlock()
+		return nil, errors.Join(addErr, err)
+	}
 
 	// Start the engine while we still hold the lock so the source set it
 	// subscribes to matches the snapshot we just installed.
@@ -228,7 +236,8 @@ func (r *Registry) ReloadContext(ctx context.Context) error {
 
 // AddSource registers s at the lowest precedence. Returns
 // [ErrSourceConflict] when a source with the same Name() already exists
-// or Name() is a reserved label.
+// or Name() is a reserved label. A registry that watches subscribes to
+// s as it does to sources given at construction (see [Watcher]).
 //
 // Transactional: if the post-add rebuild fails, the source is rolled
 // out of the chain. The source's Close is not invoked on rollback —
@@ -245,6 +254,9 @@ func (r *Registry) AddSource(s Source) error {
 	if err := r.rebuildSnapshotLocked(); err != nil {
 		r.state.sources = r.state.sources[:len(r.state.sources)-1]
 		return err
+	}
+	if r.state.watch != nil {
+		r.state.watch.subscribeLocked(s)
 	}
 	return nil
 }
@@ -276,6 +288,9 @@ func (r *Registry) InsertSource(at int, s Source) error {
 		r.state.sources = slices.Delete(r.state.sources, at, at+1)
 		return err
 	}
+	if r.state.watch != nil {
+		r.state.watch.subscribeLocked(s)
+	}
 	return nil
 }
 
@@ -300,6 +315,9 @@ func (r *Registry) RemoveSource(name string) error {
 		if err := r.rebuildSnapshotLocked(); err != nil {
 			r.state.sources = slices.Insert(r.state.sources, i, removed)
 			return err
+		}
+		if r.state.watch != nil {
+			r.state.watch.unsubscribeLocked(name)
 		}
 		_ = s.Close()
 		return nil
@@ -476,16 +494,6 @@ func redactValidationErrorsForSecrets(err error, secretKeys map[string]struct{})
 	}
 }
 
-// rebuildAndReport is the non-fatal variant of [rebuildSnapshotLocked]
-// used by [New] when the first snapshot fails the immutable or
-// validator check but the registry should still be returned. Caller
-// must hold r.state.mu.
-func (r *Registry) rebuildAndReport() {
-	if err := r.rebuildSnapshotLocked(); err != nil {
-		r.state.logger.Warn("recon: initial snapshot rejected", "err", err)
-	}
-}
-
 // rebuildSnapshotLocked builds a candidate snapshot, runs the
 // immutable + validator checks, and atomic-installs only on success.
 // On failure the previous snapshot is retained so concurrent readers
@@ -495,6 +503,14 @@ func (r *Registry) rebuildAndReport() {
 // error or the explicit / default / alias state drifts out of sync
 // with the installed snapshot.
 func (r *Registry) rebuildSnapshotLocked() error {
+	_, err := r.rebuildCandidateLocked()
+	return err
+}
+
+// rebuildCandidateLocked is [Registry.rebuildSnapshotLocked] that also
+// returns the candidate snapshot, installed or not. Caller must hold
+// r.state.mu.
+func (r *Registry) rebuildCandidateLocked() (*Snapshot, error) {
 	is := snapshotInputs{
 		sources:    r.state.sources,
 		explicits:  cloneStringAnyMap(r.state.explicits),
@@ -519,13 +535,13 @@ func (r *Registry) rebuildSnapshotLocked() error {
 	}
 	if len(multi.Errors) > 0 {
 		if len(multi.Errors) == 1 {
-			return multi.Errors[0]
+			return candidate, multi.Errors[0]
 		}
-		return multi
+		return candidate, multi
 	}
 
 	r.state.snapshot.Store(candidate)
-	return nil
+	return candidate, nil
 }
 
 // checkImmutableLocked returns one [*ImmutableChangedError] per

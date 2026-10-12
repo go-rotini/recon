@@ -220,16 +220,25 @@ func coerceInt(v Value, dest reflect.Value) error {
 
 // coerceUint mirrors [coerceInt] for unsigned destinations. Negative
 // inputs are rejected; reflect.Value.SetUint would silently wrap them.
+// Strings parse with strconv.ParseUint so the full uint64 range binds.
 func coerceUint(v Value, dest reflect.Value) error {
-	i, err := valueAsInt64(v)
-	if err != nil {
-		return err
+	var u uint64
+	if v.Kind() == StringKind {
+		var err error
+		if u, err = strconv.ParseUint(mustAsString(v), 0, 64); err != nil {
+			return fmt.Errorf("%w: %w", ErrCoercion, err)
+		}
+	} else {
+		i, err := valueAsInt64(v)
+		if err != nil {
+			return err
+		}
+		if i < 0 {
+			return fmt.Errorf("%w: %d is negative; cannot fit %s",
+				ErrCoercion, i, dest.Type())
+		}
+		u = uint64(i)
 	}
-	if i < 0 {
-		return fmt.Errorf("%w: %d is negative; cannot fit %s",
-			ErrCoercion, i, dest.Type())
-	}
-	u := uint64(i)
 	if dest.OverflowUint(u) {
 		return fmt.Errorf("%w: %d overflows %s", ErrCoercion, u, dest.Type())
 	}

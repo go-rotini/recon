@@ -118,3 +118,20 @@ func TestPerSourceFor_AliasResolved(t *testing.T) {
 		t.Fatalf("Resolved=%+v", ps.Resolved)
 	}
 }
+
+func TestPerSourceFor_AliasQueriesCanonicalPath(t *testing.T) {
+	r := newRegistry(t, WithSource(NewMapSource("m", map[string]any{"new": "from-m"})))
+	if err := r.RegisterAlias("old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	ps, err := PerSourceFor[string](r, "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ps.BySource("m"); !got.IsSet || got.Value != "from-m" {
+		t.Fatalf("BySource(m)=%+v, want the canonical key's value", got)
+	}
+	if ps.Resolved.Value != "from-m" || ps.Resolved.Source != "m" {
+		t.Fatalf("Resolved=%+v", ps.Resolved)
+	}
+}

@@ -326,3 +326,46 @@ func TestRegistry_Events_NilOnClosedBeforeNew(t *testing.T) {
 		t.Fatalf("Events on un-initialized registry=%v, want nil", ch)
 	}
 }
+
+func TestWatch_SourceAddedAfterNewIsSubscribed(t *testing.T) {
+	r := newRegistry(t, WithReloadDebounce(5*time.Millisecond))
+	added := newWatchableSource("added", map[string]any{"k": "1"})
+	if err := r.AddSource(added); err != nil {
+		t.Fatal(err)
+	}
+	inserted := newWatchableSource("inserted", map[string]any{"j": "1"})
+	if err := r.InsertSource(0, inserted); err != nil {
+		t.Fatal(err)
+	}
+
+	added.Trigger(map[string]any{"k": "2"})
+	evt := awaitEvent(t, r.Events(), 2*time.Second)
+	if evt.Err != nil || evt.Source != "added" {
+		t.Fatalf("evt=%+v, want reload from added", evt)
+	}
+	if v, _, _ := r.Get("k"); v.String() != "2" {
+		t.Fatalf("k=%v after reload", v)
+	}
+	inserted.Trigger(map[string]any{"j": "2"})
+	evt = awaitEvent(t, r.Events(), 2*time.Second)
+	if evt.Err != nil || evt.Source != "inserted" {
+		t.Fatalf("evt=%+v, want reload from inserted", evt)
+	}
+
+	if err := r.RemoveSource("added"); err != nil {
+		t.Fatal(err)
+	}
+	added.mu.Lock()
+	subs := len(added.subs)
+	added.mu.Unlock()
+	deadline := time.Now().Add(2 * time.Second)
+	for subs != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+		added.mu.Lock()
+		subs = len(added.subs)
+		added.mu.Unlock()
+	}
+	if subs != 0 {
+		t.Fatalf("removed source still has %d subscriptions", subs)
+	}
+}

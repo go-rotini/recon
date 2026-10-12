@@ -92,8 +92,11 @@ type FieldTag struct {
 	Deprecated         bool
 	DeprecationMessage string
 
-	// Validate holds the `validate=` option. Recon parses it but does
-	// not evaluate it.
+	// Validate holds the `validate=` option.
+	//
+	// Deprecated: the option has no effect; recon parses it but never
+	// evaluates it. Validate bound values with a [Validator] or
+	// [ValidatorContext] on the target, or a [SchemaValidator].
 	Validate string
 
 	// Layout is the time.Time parse layout, default RFC 3339; RFC 3339

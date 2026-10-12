@@ -3,7 +3,9 @@ package recon
 import (
 	"fmt"
 	"maps"
+	"math"
 	"reflect"
+	"strconv"
 	"time"
 )
 
@@ -76,8 +78,9 @@ type Value struct {
 }
 
 // NewValue wraps a Go value, inferring the [ValueKind] from its dynamic
-// type. Integer types convert to int64 (a uint or uint64 above
-// math.MaxInt64 wraps negative); float32 widens to float64. []any,
+// type. Integer types convert to int64, except a uint or uint64 above
+// math.MaxInt64, which becomes its decimal [StringKind] text (it
+// still binds to a uint64 field). float32 widens to float64. []any,
 // []Value, map[string]any and map[string]Value convert recursively to
 // [SliceKind] and [MapKind]. Other types become [StringKind] via
 // fmt.Sprint.
@@ -137,7 +140,7 @@ func numericValue(v any) (Value, bool) {
 	case int64:
 		return Value{kind: IntKind, raw: x}, true
 	case uint:
-		return Value{kind: IntKind, raw: int64(x)}, true
+		return uintValue(uint64(x)), true
 	case uint8:
 		return Value{kind: IntKind, raw: int64(x)}, true
 	case uint16:
@@ -145,13 +148,22 @@ func numericValue(v any) (Value, bool) {
 	case uint32:
 		return Value{kind: IntKind, raw: int64(x)}, true
 	case uint64:
-		return Value{kind: IntKind, raw: int64(x)}, true
+		return uintValue(x), true
 	case float32:
 		return Value{kind: FloatKind, raw: float64(x)}, true
 	case float64:
 		return Value{kind: FloatKind, raw: x}, true
 	}
 	return Value{}, false
+}
+
+// uintValue wraps u as [IntKind], or as its decimal [StringKind] text
+// when it exceeds math.MaxInt64, so no value wraps negative.
+func uintValue(u uint64) Value {
+	if u > math.MaxInt64 {
+		return Value{kind: StringKind, raw: strconv.FormatUint(u, 10)}
+	}
+	return Value{kind: IntKind, raw: int64(u)}
 }
 
 // NewRawValue wraps undecoded bytes plus a format hint in a Value.

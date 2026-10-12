@@ -76,3 +76,21 @@ func TestFormatError_ImmutableChanged(t *testing.T) {
 		t.Fatalf("got=%q", got)
 	}
 }
+
+func TestFormatError_RedactsSecrets(t *testing.T) {
+	multi := &MultiError{}
+	multi.Append(&CoercionError{
+		Path: MakePath("db", "pass"), WireType: "string", Target: "int",
+		Cause: errors.New(`parse "hunter2"`), Secret: true,
+	})
+	multi.Append(&ValidationError{Path: MakePath("api", "key"), Rule: "pattern", Msg: "value hunter2 rejected", Secret: true})
+	for _, err := range []error{multi, multi.Errors[0], multi.Errors[1]} {
+		got := FormatError(nil, err)
+		if strings.Contains(got, "hunter2") {
+			t.Fatalf("FormatError leaked secret: %q", got)
+		}
+		if !strings.Contains(got, "[redacted]") {
+			t.Fatalf("FormatError missing [redacted]: %q", got)
+		}
+	}
+}

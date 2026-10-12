@@ -22,6 +22,16 @@ type bindWalker struct {
 	consulted map[string]struct{}
 }
 
+// root returns a view of the walker's registry with no Sub prefix. The
+// walker's paths already include the view's prefix, so key-taking
+// registry methods must run on the root to avoid prefixing twice.
+func (w *bindWalker) root() *Registry {
+	if len(w.registry.prefix) == 0 {
+		return w.registry
+	}
+	return &Registry{state: w.registry.state}
+}
+
 // walk descends one struct level. prefix is the parent's path; the
 // walker appends each field's tag-derived segments under it.
 func (w *bindWalker) walk(rv reflect.Value, prefix Path) {
@@ -86,7 +96,7 @@ func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, sf reflect.StructFi
 		w.consulted[ParsePath(alias).String()] = struct{}{}
 	}
 	if tag.Secret {
-		w.registry.MarkSecret(path.String())
+		w.root().MarkSecret(path.String())
 	}
 	value, found := w.lookup(path, tag)
 	if tag.Immutable && found {
@@ -231,7 +241,7 @@ func (w *bindWalker) emitUnknownKeyErrors() {
 func (w *bindWalker) queueDeprecation(path Path, source string, tag FieldTag) {
 	msg := tag.DeprecationMessage
 	if msg == "" {
-		msg = "recon: key " + path.String() + " is deprecated"
+		msg = genericDeprecationMessage(path)
 	}
 	w.registry.queueWarning(DeprecationWarning{
 		Path: path, Source: source, Message: msg,
@@ -294,7 +304,7 @@ func (w *bindWalker) applyFormatDecode(v Value, format string) (Value, error) {
 // error is logged but not returned: the bind itself succeeded.
 func (w *bindWalker) applyPostBind(path Path, tag FieldTag) {
 	if tag.Unset {
-		if err := w.registry.Unset(path.String()); err != nil {
+		if err := w.root().Unset(path.String()); err != nil {
 			w.registry.state.logger.Warn("recon: unset post-bind failed",
 				"path", path.String(), "err", err)
 		}

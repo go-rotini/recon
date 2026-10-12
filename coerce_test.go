@@ -551,3 +551,26 @@ func TestCoerce_UnsupportedKind(t *testing.T) {
 		t.Fatalf("err = %v, want wrapping ErrTypeMismatch", err)
 	}
 }
+
+func TestCoerce_Uint64AboveMaxInt64(t *testing.T) {
+	const big = uint64(1<<63 + 5)
+	for _, v := range []Value{NewValue(big), NewValue(uint(big)), NewValue("9223372036854775813")} {
+		var out uint64
+		if err := coerce(v, reflect.ValueOf(&out).Elem(), FieldTag{}); err != nil {
+			t.Fatalf("coerce %v (%s): %v", v.Any(), v.Kind(), err)
+		}
+		if out != big {
+			t.Fatalf("coerce %v = %d, want %d", v.Any(), out, big)
+		}
+	}
+	if s := NewValue(big).String(); s != "9223372036854775813" {
+		t.Fatalf("NewValue(big).String() = %q", s)
+	}
+	var small uint32
+	if err := coerce(NewValue(big), reflect.ValueOf(&small).Elem(), FieldTag{}); !errors.Is(err, ErrCoercion) {
+		t.Fatalf("uint32 overflow err = %v", err)
+	}
+	if err := coerce(NewValue("-1"), reflect.ValueOf(&small).Elem(), FieldTag{}); err == nil {
+		t.Fatal("negative string coerced into uint32")
+	}
+}
