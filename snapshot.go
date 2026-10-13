@@ -540,15 +540,14 @@ func buildSnapshot(is snapshotInputs) *Snapshot {
 		values:      map[string]Value{},
 		sources:     map[string][]string{},
 		sourceNames: make([]string, len(is.sources)),
-		aliases:     map[string]string{},
-		secretKeys:  map[string]struct{}{},
 		redactor:    is.redactor,
 	}
 	for i, src := range is.sources {
 		s.sourceNames[i] = src.Name()
 	}
-	maps.Copy(s.aliases, is.aliases)
-	maps.Copy(s.secretKeys, is.secretKeys)
+	// Read-only once built, so an empty set stays nil.
+	s.aliases = snapshotCopy(is.aliases)
+	s.secretKeys = snapshotCopy(is.secretKeys)
 
 	is.explicits = flattenLayer(is.explicits)
 	is.defaults = flattenLayer(is.defaults)

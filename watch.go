@@ -345,3 +345,21 @@ func valuesEqual(a, b Value) bool {
 	}
 	return reflect.DeepEqual(a.Any(), b.Any())
 }
+
+// watchRunner is the registry's handle on its watch engine. Only [New] and [NewWithCodecs]
+// convert a *watchEngine to it, so a program that never calls them links no engine.
+type watchRunner interface {
+	subscribeLocked(src Source)
+	unsubscribeLocked(name string)
+	stop()
+	eventsChan() <-chan Event
+}
+
+// startWatchEngine builds and starts r's watch engine. The caller must hold r.state.mu.
+func startWatchEngine(r *Registry) watchRunner {
+	e := newWatchEngine(r)
+	e.start()
+	return e
+}
+
+func (e *watchEngine) eventsChan() <-chan Event { return e.events }

@@ -56,7 +56,7 @@ type registryState struct {
 	closed    atomic.Bool
 	logger    *slog.Logger
 	opts      registryOptions
-	watch     *watchEngine
+	watch     watchRunner
 }
 
 // Registry is the central configuration registry. Construct via [New].
@@ -98,7 +98,7 @@ func New(opts ...Option) (*Registry, error) {
 		return nil, options.optionErr
 	}
 	options.finishCodecs(DefaultCodecs)
-	return buildRegistry(options)
+	return buildRegistry(options, startWatchEngine)
 }
 
 // NewWithCodecs is [New] with codecs as the registry's codec set in
@@ -119,19 +119,15 @@ func NewWithCodecs(codecs *Codecs, opts ...Option) (*Registry, error) {
 		return nil, options.optionErr
 	}
 	options.finishCodecs(func() *Codecs { return NewCodecs() })
-	return buildRegistry(options)
+	return buildRegistry(options, startWatchEngine)
 }
 
 // buildRegistry builds a Registry from fully resolved options.
-func buildRegistry(options registryOptions) (*Registry, error) {
+func buildRegistry(options registryOptions, startWatch func(*Registry) watchRunner) (*Registry, error) {
 	r := &Registry{
 		state: &registryState{
-			opts:      options,
-			explicits: map[string]any{},
-			defaults:  map[string]any{},
-			aliases:   map[string]string{},
-			pins:      map[string]string{},
-			logger:    options.logger,
+			opts:   options,
+			logger: options.logger, // its maps are made by the first write (see writable)
 		},
 	}
 	if r.state.logger == nil {
@@ -163,9 +159,8 @@ func buildRegistry(options registryOptions) (*Registry, error) {
 
 	// Start the engine while we still hold the lock so the source set it
 	// subscribes to matches the snapshot we just installed.
-	if !options.noWatch {
-		r.state.watch = newWatchEngine(r)
-		r.state.watch.start()
+	if !options.noWatch && startWatch != nil {
+		r.state.watch = startWatch(r)
 	}
 
 	r.state.mu.Unlock()
@@ -190,14 +185,14 @@ func (r *Registry) Close() error {
 
 		r.state.mu.Lock()
 		defer r.state.mu.Unlock()
-		multi := &MultiError{}
+		var multi MultiError // escapes only when it holds errors
 		for _, s := range r.state.sources {
 			if cerr := s.Close(); cerr != nil {
 				multi.Append(&SourceError{Source: s.Name(), Op: "close", Cause: cerr})
 			}
 		}
 		if len(multi.Errors) > 0 {
-			err = multi
+			err = &MultiError{Errors: multi.Errors}
 		}
 	})
 	return err
@@ -215,7 +210,7 @@ func (r *Registry) Events() <-chan Event {
 	if r.state.watch == nil {
 		return nil
 	}
-	return r.state.watch.events
+	return r.state.watch.eventsChan()
 }
 
 // Reload rebuilds the snapshot from every source's current contents.
@@ -525,10 +520,10 @@ func (r *Registry) rebuildSnapshotLocked() error {
 func (r *Registry) rebuildCandidateLocked() (*Snapshot, error) {
 	is := snapshotInputs{
 		sources:    r.state.sources,
-		explicits:  cloneStringAnyMap(r.state.explicits),
-		defaults:   cloneStringAnyMap(r.state.defaults),
-		aliases:    cloneStringStringMap(r.state.aliases),
-		pins:       cloneStringStringMap(r.state.pins),
+		explicits:  snapshotCopy(r.state.explicits),
+		defaults:   snapshotCopy(r.state.defaults),
+		aliases:    snapshotCopy(r.state.aliases),
+		pins:       snapshotCopy(r.state.pins),
 		bound:      r.state.bound,
 		secretKeys: cloneStringSet(r.state.secretKeys),
 		redactor:   r.state.opts.secretRedactor,
@@ -536,7 +531,7 @@ func (r *Registry) rebuildCandidateLocked() (*Snapshot, error) {
 	}
 	candidate := buildSnapshot(is)
 
-	multi := &MultiError{}
+	var multi MultiError // escapes only when it holds errors, below
 	for _, err := range r.checkImmutableLocked(candidate) {
 		multi.Append(err)
 	}
@@ -550,7 +545,7 @@ func (r *Registry) rebuildCandidateLocked() (*Snapshot, error) {
 		if len(multi.Errors) == 1 {
 			return candidate, multi.Errors[0]
 		}
-		return candidate, multi
+		return candidate, &MultiError{Errors: multi.Errors}
 	}
 
 	r.state.snapshot.Store(candidate)
@@ -688,10 +683,38 @@ func cloneStringStringMap(m map[string]string) map[string]string {
 	return out
 }
 
+// snapshotCopy is the copy of m a snapshot build reads: nil when m is empty, which the build
+// reads as the empty map it is, and never writes to.
+func snapshotCopy[V any](m map[string]V) map[string]V {
+	if len(m) == 0 {
+		return nil
+	}
+	return maps.Clone(m)
+}
+
 // validateNotClosed returns [ErrRegistryClosed] when r has been Closed.
 func (r *Registry) validateNotClosed() error {
 	if r.state.closed.Load() {
 		return ErrRegistryClosed
 	}
 	return nil
+}
+
+// NewWithCodecsWithoutWatch is [NewWithCodecs] with [WithoutWatch]: a one-shot registry. A
+// program that builds registries only this way links no watch engine.
+func NewWithCodecsWithoutWatch(codecs *Codecs, opts ...Option) (*Registry, error) {
+	options := defaultRegistryOptions()
+	options.codecs = codecs
+	if options.codecs == nil {
+		options.codecs = NewCodecs()
+	}
+	for _, opt := range opts {
+		opt(&options)
+	}
+	if options.optionErr != nil {
+		return nil, options.optionErr
+	}
+	options.finishCodecs(func() *Codecs { return NewCodecs() })
+	options.noWatch = true
+	return buildRegistry(options, nil)
 }

@@ -27,6 +27,7 @@ func (r *Registry) Set(key string, value any) error {
 	fk := r.fullKey(key)
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
+	r.state.writable()
 	prev, hadPrev := r.state.explicits[fk]
 	if value == nil {
 		delete(r.state.explicits, fk)
@@ -51,6 +52,7 @@ func (r *Registry) SetDefault(key string, value any) error {
 	fk := r.fullKey(key)
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
+	r.state.writable()
 	prev, hadPrev := r.state.defaults[fk]
 	if value == nil {
 		delete(r.state.defaults, fk)
@@ -90,6 +92,7 @@ func (r *Registry) setLayer(values map[string]any, layer func(*registryState) ma
 	}
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
+	r.state.writable()
 	m := layer(r.state)
 	prev := cloneStringAnyMap(m)
 	for key, value := range values {
@@ -148,6 +151,7 @@ func (r *Registry) RegisterAlias(alias, canonical string) error {
 	if chain := validateNoAliasCycle(fa, fc, r.state.aliases); chain != nil {
 		return &AliasCycleError{Chain: chain}
 	}
+	r.state.writable()
 	prev, hadPrev := r.state.aliases[fa]
 	r.state.aliases[fa] = fc
 	if err := r.rebuildSnapshotLocked(); err != nil {
@@ -177,6 +181,7 @@ func (r *Registry) PinSource(key, sourceName string) error {
 			Cause: fmt.Errorf("not registered: %w", ErrSourceConflict),
 		}
 	}
+	r.state.writable()
 	prev, hadPrev := r.state.pins[fk]
 	r.state.pins[fk] = sourceName
 	if err := r.rebuildSnapshotLocked(); err != nil {
@@ -235,4 +240,13 @@ func restoreStringStringEntry(m map[string]string, key, prev string, hadPrev boo
 		return
 	}
 	delete(m, key)
+}
+
+// writable makes the override, default, alias and pin maps a write needs. A registry nothing
+// writes to keeps them nil, which every reader reads as empty. Caller must hold s.mu.
+func (s *registryState) writable() {
+	if s.explicits == nil {
+		s.explicits, s.defaults = map[string]any{}, map[string]any{}
+		s.aliases, s.pins = map[string]string{}, map[string]string{}
+	}
 }
