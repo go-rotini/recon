@@ -75,9 +75,11 @@ func (r *Registry) BindContext(ctx context.Context, target any, opts ...DecodeOp
 		errs:      &MultiError{},
 		consulted: map[string]struct{}{},
 	}
-	var paths []Path
-	w.collectPaths(rv.Type(), r.prefix, &paths)
-	r.resolveBindPaths(paths)
+	if snap := r.state.snapshot.Load(); snap != nil {
+		var missing []bindKey
+		w.collectPaths(rv.Type(), r.prefix, snap, &missing)
+		r.addBoundPaths(missing)
+	}
 	w.walk(rv, r.prefix, false)
 	r.markSecrets(w.secrets)
 	r.recordConsulted(w.consulted)
@@ -141,7 +143,8 @@ func (r *Registry) unmarshalKeyValue(key string, dest reflect.Value, opts []Deco
 	if isSecretType(dest.Type()) || holdsSecrets(dest.Type(), cfg.tagName) {
 		r.MarkSecret(key)
 	}
-	r.resolveBindPaths([]Path{r.fullPath(ParsePath(key))})
+	full := r.fullPath(ParsePath(key))
+	r.resolveBindPaths([]bindKey{{str: full.String(), path: full}})
 	v, ok, err := r.get(key, leafReadMode(dest.Type(), FieldTag{}))
 	if err != nil || !ok {
 		return err
@@ -207,26 +210,41 @@ type Unmarshaler interface {
 // answers a lookup of max_conns) is remembered, so this and every later
 // rebuild resolve it through each source's Get; the snapshot is rebuilt
 // at once only when a source has a value for one.
-func (r *Registry) resolveBindPaths(paths []Path) {
+func (r *Registry) resolveBindPaths(keys []bindKey) {
 	snap := r.state.snapshot.Load()
-	if snap == nil || len(paths) == 0 {
+	if snap == nil || len(keys) == 0 {
 		return
 	}
-	var missing []Path
-	for _, p := range paths {
-		if _, ok := snap.lookup(p.String(), p); !ok {
-			missing = append(missing, p)
+	var missing []bindKey
+	for _, k := range keys {
+		if !snap.answers(k.str, k.path) {
+			missing = append(missing, k)
 		}
 	}
+	r.addBoundPaths(missing)
+}
+
+// answers reports whether s has a value at ks, whose path is p or, when
+// p is nil, parsed from ks as needed.
+func (s *Snapshot) answers(ks string, p Path) bool {
+	_, ok := s.lookup(ks, p)
+	return ok
+}
+
+// addBoundPaths is the rest of [Registry.resolveBindPaths], for the
+// paths the snapshot did not answer.
+func (r *Registry) addBoundPaths(missing []bindKey) {
 	if len(missing) == 0 {
 		return
 	}
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
 	var added []Path
-	for _, p := range missing {
-		if _, ok := r.state.bound[p.String()]; !ok {
-			added = append(added, p)
+	var addedKeys []string
+	for _, k := range missing {
+		if _, ok := r.state.bound[k.str]; !ok {
+			added = append(added, k.pathOf())
+			addedKeys = append(addedKeys, k.str)
 		}
 	}
 	if len(added) == 0 {
@@ -237,8 +255,8 @@ func (r *Registry) resolveBindPaths(paths []Path) {
 	for k := range prev {
 		next[k] = struct{}{}
 	}
-	for _, p := range added {
-		next[p.String()] = struct{}{}
+	for _, k := range addedKeys {
+		next[k] = struct{}{}
 	}
 	r.state.bound = next
 	if !r.anySourceHasLocked(added) {

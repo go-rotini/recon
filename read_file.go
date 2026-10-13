@@ -33,24 +33,36 @@ func isNotExist(err error) bool {
 // are [*fs.PathError]s, so errors.Is sees [fs.ErrNotExist] and
 // [ErrFileTooLarge] through them.
 func readFileCapped(path string) ([]byte, error) {
+	data, _, err := readFileStamped(path)
+	return data, err
+}
+
+// readFileStamped is [readFileCapped] that also stamps the file it
+// opened, as it was before the read.
+func readFileStamped(path string) ([]byte, fileStamp, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err //nolint:wrapcheck // *fs.PathError already names the path.
+		return nil, fileStamp{}, err //nolint:wrapcheck // *fs.PathError already names the path.
 	}
 	defer func() { _ = f.Close() }()
+	var stamp fileStamp
+	info, statErr := f.Stat()
+	if statErr == nil {
+		stamp = fileStamp{exists: true, size: info.Size(), mod: info.ModTime()}
+	}
 	// Refuse an oversized regular file before allocating; the limited
 	// read below covers pipes and files that grow mid-read.
-	if info, statErr := f.Stat(); statErr == nil && info.Mode().IsRegular() && info.Size() > MaxFileSize {
-		return nil, &fs.PathError{Op: "read", Path: path, Err: ErrFileTooLarge}
+	if statErr == nil && info.Mode().IsRegular() && info.Size() > MaxFileSize {
+		return nil, stamp, &fs.PathError{Op: "read", Path: path, Err: ErrFileTooLarge}
 	}
 	data, err := io.ReadAll(io.LimitReader(f, MaxFileSize+1))
 	if err != nil {
-		return nil, &fs.PathError{Op: "read", Path: path, Err: err}
+		return nil, stamp, &fs.PathError{Op: "read", Path: path, Err: err}
 	}
 	if int64(len(data)) > MaxFileSize {
-		return nil, &fs.PathError{Op: "read", Path: path, Err: ErrFileTooLarge}
+		return nil, stamp, &fs.PathError{Op: "read", Path: path, Err: ErrFileTooLarge}
 	}
-	return data, nil
+	return data, stamp, nil
 }
 
 // readAllCapped reads r to EOF, failing with [ErrFileTooLarge] past

@@ -138,13 +138,15 @@ func ParseTag(s string) FieldTag {
 		return ft
 	}
 
-	parts := strings.Split(s, ",")
-	ft.Name = strings.TrimSpace(parts[0])
+	name, rest, more := strings.Cut(s, ",")
+	ft.Name = strings.TrimSpace(name)
 	if ft.Name == "-" {
 		ft.Skip = true
 		return ft
 	}
-	for _, raw := range parts[1:] {
+	for more {
+		var raw string
+		raw, rest, more = strings.Cut(rest, ",")
 		opt := strings.TrimSpace(raw)
 		if opt == "" {
 			continue

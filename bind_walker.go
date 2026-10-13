@@ -94,6 +94,7 @@ type fieldPlan struct {
 	tag       FieldTag
 	segs      []string // the field's own path segments
 	absPath   Path     // the `path=` option, parsed
+	key       string   // the leaf path's string form under an empty prefix
 	aliases   []Path   // the `aliases=` option, parsed
 	secret    bool     // the field's type is or holds a [Secret] or secret field
 	// walkable is true for a struct field recursed into rather than
@@ -135,8 +136,10 @@ func (w *bindWalker) plan(t reflect.Type) []fieldPlan {
 			secret:    isSecretType(sf.Type) || holdsSecrets(sf.Type, w.opts.tagName),
 			walkable:  tag.Format == "" && isWalkableStructType(sf.Type),
 		}
+		fp.key = Path(fp.segs).String()
 		if tag.Path != "" {
 			fp.absPath = ParsePath(tag.Path)
+			fp.key = fp.absPath.String()
 		}
 		for _, a := range tag.Aliases {
 			fp.aliases = append(fp.aliases, ParsePath(a))
@@ -166,10 +169,19 @@ func (fp *fieldPlan) leafPath(prefix Path) Path {
 	return prefix.Append(fp.segs...)
 }
 
+// leafKey is leafPath(prefix).String(), read from the plan when the
+// path does not depend on prefix.
+func (fp *fieldPlan) leafKey(prefix Path) string {
+	if fp.absPath != nil || len(prefix) == 0 {
+		return fp.key
+	}
+	return prefix.Append(fp.segs...).String()
+}
+
 // collectPaths appends to out every path (and `aliases=` path) the walk
-// of struct type t under prefix would look up, without binding
-// anything.
-func (w *bindWalker) collectPaths(t reflect.Type, prefix Path, out *[]Path) {
+// of struct type t under prefix would look up that snap does not
+// answer, without binding anything.
+func (w *bindWalker) collectPaths(t reflect.Type, prefix Path, snap *Snapshot, out *[]bindKey) {
 	w.stack = append(w.stack, t)
 	defer func() { w.stack = w.stack[:len(w.stack)-1] }()
 	plans := w.plan(t)
@@ -184,12 +196,35 @@ func (w *bindWalker) collectPaths(t reflect.Type, prefix Path, out *[]Path) {
 					continue
 				}
 			}
-			w.collectPaths(st, nested, out)
+			w.collectPaths(st, nested, snap, out)
 			continue
 		}
-		*out = append(*out, fp.leafPath(prefix))
-		*out = append(*out, fp.aliases...)
+		if k := fp.leafKey(prefix); !snap.answers(k, nil) {
+			*out = append(*out, bindKey{str: k, fp: fp, prefix: prefix})
+		}
+		for _, a := range fp.aliases {
+			if k := a.String(); !snap.answers(k, a) {
+				*out = append(*out, bindKey{str: k, path: a})
+			}
+		}
 	}
+}
+
+// bindKey is one path a bind reads: its string form, and the path
+// itself or the leaf plan and prefix that build it.
+type bindKey struct {
+	str    string
+	path   Path
+	fp     *fieldPlan
+	prefix Path
+}
+
+// pathOf returns k's path, building a leaf's on demand.
+func (k bindKey) pathOf() Path {
+	if k.fp == nil {
+		return k.path
+	}
+	return k.fp.leafPath(k.prefix)
 }
 
 // walkNested recurses into a struct or *struct field, allocating the
@@ -238,8 +273,16 @@ func (w *bindWalker) hasKeysUnder(p Path) bool {
 // value after a successful bind.
 func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, fp *fieldPlan, inherited bool) {
 	tag := fp.tag
-	path := fp.leafPath(prefix)
-	pathStr := path.String()
+	pathStr := fp.leafKey(prefix)
+	// The leaf's Path is built only when something keeps it: an error,
+	// a baseline, a warning or an unset.
+	var built Path
+	path := func() Path {
+		if built == nil {
+			built = fp.leafPath(prefix)
+		}
+		return built
+	}
 	w.consulted[pathStr] = struct{}{}
 	for _, alias := range fp.aliases {
 		w.consulted[alias.String()] = struct{}{}
@@ -248,7 +291,7 @@ func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, fp *fieldPlan, inhe
 	if secret {
 		w.markSecret(pathStr)
 	}
-	value, found := w.lookup(path, tag.Source, fp.aliases, leafReadMode(fv.Type(), tag))
+	value, found := w.lookup(nil, pathStr, tag.Source, fp.aliases, leafReadMode(fv.Type(), tag))
 	var nullFrom []string
 	if found && (tag.Required || tag.HasDefault) && value.Kind() == NullKind {
 		found, nullFrom = false, []string{value.Source()}
@@ -258,7 +301,7 @@ func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, fp *fieldPlan, inhe
 	}
 	coerceErr := func(cause error) *CoercionError {
 		return &CoercionError{
-			Path: path, Source: value.Source(),
+			Path: path(), Source: value.Source(),
 			WireType: value.Kind().String(),
 			Target:   fv.Type().String(), Cause: cause,
 			Secret: secret || w.root().IsSecret(pathStr),
@@ -270,7 +313,7 @@ func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, fp *fieldPlan, inhe
 		case tag.HasDefault:
 			value = NewValue(tag.DefaultValue)
 		case tag.Required:
-			w.appendErr(&MissingRequiredError{Path: path, Sources: nullFrom})
+			w.appendErr(&MissingRequiredError{Path: path(), Sources: nullFrom})
 			return
 		default:
 			return // field stays at its Go zero value
@@ -303,7 +346,7 @@ func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, fp *fieldPlan, inhe
 	value = next
 
 	if tag.NotEmpty && isEmptyValue(value) {
-		w.appendErr(&EmptyValueError{Path: path, Source: value.Source()})
+		w.appendErr(&EmptyValueError{Path: path(), Source: value.Source()})
 		return
 	}
 
@@ -317,15 +360,15 @@ func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, fp *fieldPlan, inhe
 // noteFound records what a leaf's found value implies: a map value's
 // keys count as consulted, `immutable` baselines it, and `deprecated`
 // queues a warning.
-func (w *bindWalker) noteFound(path Path, pathStr string, value Value, tag FieldTag) {
+func (w *bindWalker) noteFound(path func() Path, pathStr string, value Value, tag FieldTag) {
 	if value.Kind() == MapKind {
 		w.consultedTrees = append(w.consultedTrees, pathStr)
 	}
 	if tag.Immutable {
-		w.registry.markImmutable(path, value)
+		w.registry.markImmutable(path(), value)
 	}
 	if tag.Deprecated {
-		w.queueDeprecation(path, value.Source(), tag)
+		w.queueDeprecation(path(), value.Source(), tag)
 	}
 }
 
@@ -607,24 +650,24 @@ func (w *bindWalker) applyFormatDecode(v Value, format string) (Value, error) {
 
 // applyPostBind runs `unset` after a successful field bind. The Unset
 // error is logged but not returned: the bind itself succeeded.
-func (w *bindWalker) applyPostBind(path Path, tag FieldTag) {
+func (w *bindWalker) applyPostBind(path func() Path, tag FieldTag) {
 	if tag.Unset {
-		if err := w.root().Unset(path.String()); err != nil {
+		if err := w.root().Unset(path().String()); err != nil {
 			w.registry.state.logger.Warn("recon: unset post-bind failed",
-				"path", path.String(), "err", err)
+				"path", path().String(), "err", err)
 		}
 	}
 }
 
-// lookup resolves path against the snapshot, falling back through
-// aliases. When source names a pinned source, a hit at path from any
-// other source is rejected so the field falls through to default /
-// required logic.
-func (w *bindWalker) lookup(path Path, source string, aliases []Path, mode readMode) (Value, bool) {
-	v, ok := w.lookupSnapshot(path, mode)
+// lookup resolves path, whose string form is pathStr, against the
+// snapshot, falling back through aliases. When source names a pinned
+// source, a hit at path from any other source is rejected so the field
+// falls through to default / required logic.
+func (w *bindWalker) lookup(path Path, pathStr, source string, aliases []Path, mode readMode) (Value, bool) {
+	v, ok := w.lookupSnapshot(path, pathStr, mode)
 	if !ok {
 		for _, alias := range aliases {
-			av, aok := w.lookupSnapshot(alias, mode)
+			av, aok := w.lookupSnapshot(alias, alias.String(), mode)
 			if aok {
 				return av, true
 			}
@@ -640,12 +683,12 @@ func (w *bindWalker) lookup(path Path, source string, aliases []Path, mode readM
 // lookupSnapshot reads the snapshot directly. The walker passes
 // already-prefixed absolute paths, so bypassing [Registry.GetPath]
 // avoids double-prefixing on Sub-view binds.
-func (w *bindWalker) lookupSnapshot(path Path, mode readMode) (Value, bool) {
+func (w *bindWalker) lookupSnapshot(path Path, pathStr string, mode readMode) (Value, bool) {
 	snap := w.registry.state.snapshot.Load()
 	if snap == nil {
 		return Value{}, false
 	}
-	return snap.read(path.String(), path, mode)
+	return snap.read(pathStr, path, mode)
 }
 
 // segmentsFor returns the path segments representing sf. With

@@ -150,3 +150,13 @@ func lookupCodec(codecs *Codecs, format string) (Codec, error) {
 	}
 	return nil, fmt.Errorf("%w: no codec registered for format %q", ErrUnsupportedFormat, format)
 }
+
+// freshDecoder reports whether c is a bundled codec, whose Decode returns a new map that
+// nothing else refers to.
+func freshDecoder(c Codec) bool {
+	switch c.(type) {
+	case yamlCodec, jsonCodec, tomlCodec, jsoncCodec, dotenvCodec:
+		return true
+	}
+	return false
+}

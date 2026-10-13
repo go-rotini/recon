@@ -69,7 +69,7 @@ func newFileSourceFS(codecs *Codecs, parseErr parseErrorFunc, name string, fsys 
 	}
 
 	return &FileSourceFS{
-		MapSource: newFileMapSource(name, decoded, cfg),
+		MapSource: newFileMapSource(name, decoded, freshDecoder(codec), cfg),
 		codec:     codec,
 		path:      path,
 		optional:  cfg.optional,

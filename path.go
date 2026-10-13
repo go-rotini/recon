@@ -1,6 +1,7 @@
 package recon
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 )
@@ -128,24 +129,92 @@ func (p Path) String() string {
 	return b.String()
 }
 
-// sortPaths sorts ps by canonical string form, rendering each path
-// once rather than on every comparison.
+// AppendCanonical appends the canonical form of p, as [Path.String]
+// returns it, to b and returns the extended buffer.
+func (p Path) AppendCanonical(b []byte) []byte {
+	switch {
+	case len(p) == 0:
+		return b
+	case len(p) == 1 && p[0] == "":
+		return append(b, "[]"...)
+	}
+	for i, seg := range p {
+		if i > 0 {
+			b = append(b, DefaultDelimiter...)
+		}
+		if !needsBrackets(seg) {
+			b = append(b, seg...)
+			continue
+		}
+		b = append(b, '[')
+		for j := range len(seg) {
+			if seg[j] == ']' {
+				b = append(b, ']')
+			}
+			b = append(b, seg[j])
+		}
+		b = append(b, ']')
+	}
+	return b
+}
+
+// sortPaths sorts ps by canonical string form, comparing the forms
+// without building them.
 func sortPaths(ps []Path) {
 	if len(ps) < 2 {
 		return
 	}
-	type keyed struct {
-		path Path
-		key  string
+	slices.SortFunc(ps, comparePaths)
+}
+
+// comparePaths orders a and b as strings.Compare orders a.String() and
+// b.String(). Paths whose form needs brackets are rendered; for the
+// rest the form is the segments joined by the delimiter, compared in
+// place.
+func comparePaths(a, b Path) int {
+	if bracketed(a) || bracketed(b) {
+		return strings.Compare(a.String(), b.String())
 	}
-	ks := make([]keyed, len(ps))
-	for i, p := range ps {
-		ks[i] = keyed{path: p, key: p.String()}
+	delim := DefaultDelimiter[0]
+	for i := 0; ; i++ {
+		switch {
+		case i == len(a) && i == len(b):
+			return 0
+		case i == len(a):
+			return -1 // a's form is a prefix of b's
+		case i == len(b):
+			return 1
+		}
+		sa, sb := a[i], b[i]
+		if sa == sb {
+			continue
+		}
+		n := min(len(sa), len(sb))
+		k := 0
+		for k < n && sa[k] == sb[k] {
+			k++
+		}
+		if k < n {
+			return cmp.Compare(sa[k], sb[k])
+		}
+		// One segment is a prefix of the other: the shorter is followed by
+		// the delimiter, or ends its path.
+		if len(sa) < len(sb) {
+			if i+1 == len(a) {
+				return -1
+			}
+			return cmp.Compare(delim, sb[k])
+		}
+		if i+1 == len(b) {
+			return 1
+		}
+		return cmp.Compare(sa[k], delim)
 	}
-	slices.SortFunc(ks, func(a, b keyed) int { return strings.Compare(a.key, b.key) })
-	for i, k := range ks {
-		ps[i] = k.path
-	}
+}
+
+// bracketed reports whether p's canonical form escapes a segment.
+func bracketed(p Path) bool {
+	return (len(p) == 1 && p[0] == "") || slices.ContainsFunc(p, needsBrackets)
 }
 
 // topLevelDelims calls fn with the index of each delimiter in the

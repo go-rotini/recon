@@ -52,6 +52,10 @@ type FileSource struct {
 
 	// stamp describes the file as it was before the last read.
 	stamp fileStamp
+
+	// decoded reports whether the last read decoded a document: the
+	// file was present and not empty. Guarded by reload.
+	decoded bool
 }
 
 // NewFileSource constructs a [FileSource] for path. Codec resolution
@@ -96,8 +100,7 @@ func newFileSource(codecs *Codecs, parseErr parseErrorFunc, path string, opts []
 	if name == "" {
 		name = filepath.Base(resolved)
 	}
-	stamp := statFile(resolved)
-	data, missing, err := readFileMaybeOptional(resolved, cfg.optional)
+	data, stamp, missing, err := readFileMaybeOptional(resolved, cfg.optional)
 	if err != nil {
 		return nil, err
 	}
@@ -111,13 +114,14 @@ func newFileSource(codecs *Codecs, parseErr parseErrorFunc, path string, opts []
 	}
 
 	src := &FileSource{
-		MapSource:    newFileMapSource(name, decoded, cfg),
+		MapSource:    newFileMapSource(name, decoded, freshDecoder(codec), cfg),
 		resolvedPath: resolved,
 		codec:        codec,
 		optional:     cfg.optional,
 		watcher:      cfg.watcher,
 		parseErr:     parseErr,
 		stamp:        stamp,
+		decoded:      !missing && len(data) > 0,
 	}
 	if missing {
 		src.missing.Store(true)
@@ -127,6 +131,20 @@ func newFileSource(codecs *Codecs, parseErr parseErrorFunc, path string, opts []
 
 // Path returns the absolute, expanded path the source reads from.
 func (s *FileSource) Path() string { return s.resolvedPath }
+
+// Document returns a copy of the document the file held when it was
+// last read, and true; or nil and false when nothing was decoded
+// because the file was missing or empty.
+func (s *FileSource) Document() (map[string]any, bool) {
+	s.reload.Lock()
+	defer s.reload.Unlock()
+	if !s.decoded {
+		return nil, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return deepCopyMap(s.data), true
+}
 
 // Format returns the canonical codec name driving this source's
 // decode.
@@ -146,15 +164,15 @@ func (s *FileSource) Reload() error {
 	s.reload.Lock()
 	defer s.reload.Unlock()
 
-	stamp := statFile(s.resolvedPath)
-	data, missing, err := readFileMaybeOptional(s.resolvedPath, s.optional)
+	data, stamp, missing, err := readFileMaybeOptional(s.resolvedPath, s.optional)
 	if err != nil {
 		return err
 	}
 	s.stamp = stamp
 	s.missing.Store(missing)
 	if missing {
-		s.Replace(map[string]any{})
+		s.decoded = false
+		s.replaceOwned(map[string]any{})
 		return nil
 	}
 	data = stripBOM(data)
@@ -162,7 +180,12 @@ func (s *FileSource) Reload() error {
 	if err != nil {
 		return s.parseErr(s.Name(), s.resolvedPath, data, err)
 	}
-	s.Replace(decoded)
+	s.decoded = len(data) > 0
+	if freshDecoder(s.codec) {
+		s.replaceOwned(decoded)
+	} else {
+		s.Replace(decoded)
+	}
 	return nil
 }
 
@@ -347,20 +370,21 @@ func resolveFileCodec(path string, cfg fileOptions, codecs *Codecs) (Codec, erro
 	return c, nil
 }
 
-// readFileMaybeOptional reads path. With optional=true a missing file
-// returns (nil, true, nil); other errors surface regardless.
-func readFileMaybeOptional(path string, optional bool) (data []byte, missing bool, err error) {
-	b, err := readFileCapped(path)
+// readFileMaybeOptional reads path, stamping the file it read. With
+// optional=true a missing file returns (nil, true, nil) and an empty
+// stamp; other errors surface regardless.
+func readFileMaybeOptional(path string, optional bool) (data []byte, stamp fileStamp, missing bool, err error) {
+	b, stamp, err := readFileStamped(path)
 	if err != nil {
 		if isNotExist(err) {
 			if optional {
-				return nil, true, nil
+				return nil, fileStamp{}, true, nil
 			}
-			return nil, false, fmt.Errorf("recon: file %q: %w", path, fs.ErrNotExist)
+			return nil, fileStamp{}, false, fmt.Errorf("recon: file %q: %w", path, fs.ErrNotExist)
 		}
-		return nil, false, fmt.Errorf("recon: read %q: %w", path, err)
+		return nil, fileStamp{}, false, fmt.Errorf("recon: read %q: %w", path, err)
 	}
-	return b, false, nil
+	return b, stamp, false, nil
 }
 
 // fileStamp is what os.Stat reports about a file, enough to tell that

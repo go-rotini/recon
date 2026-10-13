@@ -83,6 +83,10 @@ func resolveShadow(p Path, pathStr string, is snapshotInputs) (Value, []string, 
 	var winner Value
 	var winnerName string
 	var srcs []string
+	start := 0
+	if is.srcArena != nil {
+		start = len(*is.srcArena)
+	}
 	for _, s := range is.sources {
 		rawVal, ok := sourceGet(s, p, pathStr, is)
 		if !ok {
@@ -92,9 +96,20 @@ func resolveShadow(p Path, pathStr string, is snapshotInputs) (Value, []string, 
 			winner = rawVal.withSource(s.Name())
 			winnerName = s.Name()
 		}
-		srcs = append(srcs, s.Name())
+		if is.srcArena != nil {
+			if *is.srcArena == nil {
+				*is.srcArena = make([]string, 0, is.srcCap)
+			}
+			*is.srcArena = append(*is.srcArena, s.Name())
+		} else {
+			srcs = append(srcs, s.Name())
+		}
 	}
 	if winnerName != "" {
+		if is.srcArena != nil {
+			a := *is.srcArena
+			srcs = a[start:len(a):len(a)]
+		}
 		return winner, srcs, true
 	}
 	if raw, ok := layerGet(is.defaults, pathStr, is); ok {

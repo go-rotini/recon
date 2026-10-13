@@ -631,7 +631,11 @@ func fieldTag(sf reflect.StructField, primary string) (FieldTag, bool) {
 // name and then the lowercased Go name; then each `aliases=` entry.
 func lookupElementKey(m map[string]Value, sf reflect.StructField, tag FieldTag) (Value, bool) {
 	if tag.Name != "" {
-		if v, ok := lookupElementPath(m, ParsePath(tag.Name), tag.Transform); ok {
+		p := Path{tag.Name} // ParsePath of a name with no delimiter or bracket
+		if strings.ContainsAny(tag.Name, DefaultDelimiter+"[") {
+			p = ParsePath(tag.Name)
+		}
+		if v, ok := lookupElementPath(m, p, tag.Transform); ok {
 			return v, true
 		}
 	} else {

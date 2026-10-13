@@ -88,7 +88,7 @@ func (s *MapSource) Keys() []Path {
 			}
 		}
 	} else {
-		walkLeaves(s.data, nil, &out)
+		out = leafPaths(s.data)
 	}
 	sortPaths(out)
 	return out
@@ -105,16 +105,51 @@ func (s *MapSource) Replace(m map[string]any) {
 	s.data = deepCopyMap(m)
 }
 
-// walkLeaves appends every (path, leaf) pair to *out by depth-first
-// recursion. A leaf is any value that is not a map[string]any.
-func walkLeaves(m map[string]any, prefix Path, out *[]Path) {
-	for k, v := range m {
-		p := prefix.Append(k)
+// leafPaths returns the path of every leaf of m, in no particular order;
+// nil when m has none. A leaf is any value that is not a
+// map[string]any. The paths share one backing array, each capped at
+// its own length, so they stay independent.
+func leafPaths(m map[string]any) []Path {
+	leaves, segs := countLeaves(m, 1)
+	if leaves == 0 {
+		return nil
+	}
+	w := leafWriter{arena: make([]string, 0, segs), out: make([]Path, 0, leaves)}
+	w.walk(m, make([]string, 0, 8))
+	return w.out
+}
+
+// countLeaves returns the number of leaves under m, and the segments
+// their paths hold together, for m at the given depth.
+func countLeaves(m map[string]any, depth int) (leaves, segs int) {
+	for _, v := range m {
 		if sub, ok := v.(map[string]any); ok {
-			walkLeaves(sub, p, out)
+			l, s := countLeaves(sub, depth+1)
+			leaves, segs = leaves+l, segs+s
 			continue
 		}
-		*out = append(*out, p)
+		leaves++
+		segs += depth
+	}
+	return leaves, segs
+}
+
+// leafWriter collects leaf paths into one backing array.
+type leafWriter struct {
+	arena []string
+	out   []Path
+}
+
+// walk appends the path of each leaf under m, below prefix.
+func (w *leafWriter) walk(m map[string]any, prefix []string) {
+	for k, v := range m {
+		if sub, ok := v.(map[string]any); ok {
+			w.walk(sub, append(prefix, k))
+			continue
+		}
+		start := len(w.arena)
+		w.arena = append(append(w.arena, prefix...), k)
+		w.out = append(w.out, Path(w.arena[start:len(w.arena):len(w.arena)]))
 	}
 }
 
@@ -154,12 +189,27 @@ func deepCopyValue(v any) any {
 	}
 }
 
-// newFileMapSource is [NewMapSource] for a file source built with cfg.
-func newFileMapSource(name string, decoded map[string]any, cfg fileOptions) *MapSource {
-	ms := NewMapSource(name, decoded)
+// newFileMapSource is [NewMapSource] for a file source built with cfg. A map that only the
+// source refers to (owned) is held as it is rather than copied.
+func newFileMapSource(name string, decoded map[string]any, owned bool, cfg fileOptions) *MapSource {
+	ms := &MapSource{name: name, data: decoded}
+	if !owned || decoded == nil {
+		ms.data = deepCopyMap(decoded)
+	}
 	if cfg.envKeys {
 		prefix := cfg.envPrefix
 		ms.envKeys = &prefix
 	}
 	return ms
+}
+
+// replaceOwned is [MapSource.Replace] for a map that only the source refers to, which it holds
+// without copying.
+func (s *MapSource) replaceOwned(m map[string]any) {
+	if m == nil {
+		m = map[string]any{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data = m
 }

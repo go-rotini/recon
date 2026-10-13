@@ -46,6 +46,10 @@ type Snapshot struct {
 	// (including srcExplicit / srcDefault) in precedence order.
 	sources map[string][]string
 
+	// srcArena is the block most sources lists are carved from, made by
+	// the first key a registered source supplies.
+	srcArena []string
+
 	// keys is the sorted union of canonical and alias paths; keyStrs
 	// holds their canonical strings in the same order.
 	keys    []Path
@@ -526,6 +530,11 @@ type snapshotInputs struct {
 	// aliasesOf maps a canonical path string to the alias paths that
 	// resolve to it, sorted. Filled by buildSnapshot.
 	aliasesOf map[string][]Path
+
+	// srcArena, when set, holds the provenance lists resolveShadow
+	// returns, one after another, each capped at its own length.
+	srcArena *[]string
+	srcCap   int // the capacity srcArena is made with
 }
 
 // buildSnapshot resolves every candidate key under is and produces a
@@ -554,6 +563,7 @@ func buildSnapshot(is snapshotInputs) *Snapshot {
 	is.aliasesOf = invertAliases(is.aliases)
 
 	candidates := collectCandidateKeys(is)
+	is.srcArena, is.srcCap = &s.srcArena, len(candidates)
 	// First resolve each canonical key once; then stamp aliases.
 	paths := make(map[string]Path, len(candidates))
 	for keyStr, keyPath := range candidates {

@@ -107,14 +107,15 @@ func NewValue(v any) Value {
 		return x
 	case json.Number:
 		return numberValue(x)
+	// A scalar keeps the interface it came in: boxing it again would copy it to the heap.
 	case string:
-		return Value{kind: StringKind, raw: x}
+		return Value{kind: StringKind, raw: v}
 	case bool:
-		return Value{kind: BoolKind, raw: x}
+		return Value{kind: BoolKind, raw: v}
 	case time.Time:
-		return Value{kind: TimeKind, raw: x}
+		return Value{kind: TimeKind, raw: v}
 	case time.Duration:
-		return Value{kind: DurationKind, raw: x}
+		return Value{kind: DurationKind, raw: v}
 	case []any:
 		out := make([]Value, len(x))
 		for i, e := range x {
@@ -188,7 +189,7 @@ func numericValue(v any) (Value, bool) {
 	case int32:
 		return Value{kind: IntKind, raw: int64(x)}, true
 	case int64:
-		return Value{kind: IntKind, raw: x}, true
+		return Value{kind: IntKind, raw: v}, true
 	case uint:
 		return uintValue(uint64(x)), true
 	case uint8:
@@ -202,7 +203,7 @@ func numericValue(v any) (Value, bool) {
 	case float32:
 		return Value{kind: FloatKind, raw: float64(x)}, true
 	case float64:
-		return Value{kind: FloatKind, raw: x}, true
+		return Value{kind: FloatKind, raw: v}, true
 	}
 	return Value{}, false
 }
