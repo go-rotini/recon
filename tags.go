@@ -61,13 +61,15 @@ type FieldTag struct {
 	// yaml and toml fallback tags, where it means something else.
 	OmitEmpty bool
 
-	// Required: an absent or null value is an error.
+	// Required: an absent or null value is an error, unless the field
+	// has a `default=`.
 	Required bool
 
 	// NotEmpty: the resolved value must be non-empty.
 	NotEmpty bool
 
-	// HasDefault, DefaultValue: a `default=` option was supplied.
+	// HasDefault, DefaultValue: a `default=` option was supplied. It
+	// fills the field when the value is absent or null.
 	HasDefault   bool
 	DefaultValue string
 
@@ -108,9 +110,9 @@ type FieldTag struct {
 	Validate string
 
 	// Layout is the time.Time parse layout, default RFC 3339. When it
-	// fails, the forms [Value.AsTime] accepts are tried: RFC 3339 with
-	// nanoseconds, a date-time without an offset, a bare date and a
-	// time of day. Set via `layout=`.
+	// fails, RFC 3339 with nanoseconds, a date-time without an offset
+	// and a bare date are tried; without `layout=`, a time of day is
+	// tried too, as [Value.AsTime] does. Set via `layout=`.
 	Layout string
 
 	// Base64 / Hex: byte-encoding decoders. Mutually exclusive.

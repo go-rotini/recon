@@ -1,8 +1,13 @@
 package recon
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"net/netip"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -403,9 +408,9 @@ func (c *captureValidator) Validate(m map[string]any) error {
 	return nil
 }
 
-// Integers above int64 stay numbers: uint64 within its range, exact
-// text beyond, in every JSON-family codec and through Save and the
-// validator input.
+// Integers above int64 stay numbers: uint64 within its range, an exact
+// json.Number beyond, in every JSON-family codec and through Save and
+// the validator input.
 func TestJSON_BigIntegersStayNumbers(t *testing.T) {
 	for _, codec := range []Codec{JSON, JSONC} {
 		m, err := codec.Decode([]byte(`{"u": 18446744073709551615, "h": 9223372036854775808, "x": 123456789012345678901234567890}`))
@@ -415,8 +420,8 @@ func TestJSON_BigIntegersStayNumbers(t *testing.T) {
 		if _, ok := m["u"].(uint64); !ok {
 			t.Fatalf("%s: u = %T, want uint64", codec.Name(), m["u"])
 		}
-		if m["x"] != "123456789012345678901234567890" {
-			t.Fatalf("%s: x = %#v, want its text", codec.Name(), m["x"])
+		if m["x"] != json.Number("123456789012345678901234567890") {
+			t.Fatalf("%s: x = %#v, want a json.Number", codec.Name(), m["x"])
 		}
 		v := &captureValidator{}
 		r := newRegistry(t, WithoutWatch(), WithSource(NewMapSource("j", m)), WithValidator(v))
@@ -425,6 +430,12 @@ func TestJSON_BigIntegersStayNumbers(t *testing.T) {
 		}
 		if v.got["u"] != uint64(18446744073709551615) || v.got["h"] != uint64(9223372036854775808) {
 			t.Fatalf("validator input u=%#v h=%#v", v.got["u"], v.got["h"])
+		}
+		if v.got["x"] != json.Number("123456789012345678901234567890") {
+			t.Fatalf("validator input x=%#v", v.got["x"])
+		}
+		if x, _, _ := r.Get("x"); x.String() != "123456789012345678901234567890" {
+			t.Fatalf("Get(x) = %v", x)
 		}
 		var cfg struct {
 			U uint64 `recon:"u"`
@@ -455,6 +466,9 @@ func TestJSON_FloatOverflowIsPositioned(t *testing.T) {
 		}
 		if line, col := pe.Position(); line != 2 || col != 8 {
 			t.Fatalf("%s: position %d:%d, want 2:8 (%v)", codec.Name(), line, col, err)
+		}
+		if msg := err.Error(); !strings.Contains(msg, "value 1e400 overflows float64") || strings.Contains(msg, "strconv") || !errors.Is(err, strconv.ErrRange) {
+			t.Fatalf("%s: %v", codec.Name(), err)
 		}
 	}
 }
@@ -584,5 +598,451 @@ func TestTOML_FloatOverflowIsPositioned(t *testing.T) {
 	}
 	if line, col := pe.Position(); line != 1 || col < 1 {
 		t.Fatalf("position %d:%d (%v)", line, col, err)
+	}
+}
+
+type (
+	selfMap   map[string]selfMap
+	selfSlice []selfSlice
+	selfPtr   *selfPtr
+	mutualA   []mutualB
+	mutualB   map[string]mutualA
+)
+
+// Self-referencing container types bind and unmarshal without hanging.
+func TestBind_SelfReferencingContainers(t *testing.T) {
+	for name, fn := range map[string]func(r *Registry) error{
+		"map field": func(r *Registry) error {
+			var c struct{ T selfMap }
+			return r.Bind(&c)
+		},
+		"slice field": func(r *Registry) error {
+			var c struct{ L selfSlice }
+			return r.Bind(&c)
+		},
+		"pointer field": func(r *Registry) error {
+			var c struct{ P selfPtr }
+			return r.Bind(&c)
+		},
+		"mutual field": func(r *Registry) error {
+			var c struct{ M mutualA }
+			return r.Bind(&c)
+		},
+		"UnmarshalKey map": func(r *Registry) error {
+			var tr selfMap
+			return r.UnmarshalKey("t", &tr)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, err := New(WithoutWatch(), WithSource(NewMapSource("m", map[string]any{"t": map[string]any{"a": map[string]any{}}})))
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- fn(r) }()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("did not return")
+			}
+		})
+	}
+	for _, typ := range []reflect.Type{
+		reflect.TypeFor[selfMap](), reflect.TypeFor[selfSlice](),
+		reflect.TypeFor[selfPtr](), reflect.TypeFor[mutualA](),
+	} {
+		if isSecretType(typ) || scanSecrets(typ, "recon", nil) {
+			t.Errorf("%v reported as secret", typ)
+		}
+	}
+}
+
+// A null or scalar a lower layer leaves at a key does not hide the
+// higher-precedence keys below it from Get, map fields and
+// GetStringMap.
+func TestResolve_LowerParentYieldsToKeysBelow(t *testing.T) {
+	t.Setenv("APP_LABELS_TEAM", "core")
+	t.Setenv("APP_LOG_LEVEL", "debug")
+	file, err := NewBufferSource("file", "yaml", []byte("labels:\nlog: plain\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(WithoutWatch(), WithSource(NewOSEnvSource(WithEnvPrefix("APP_"))), WithSource(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		Labels map[string]string
+		Log    map[string]string
+	}
+	if err := r.Bind(&c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Labels["team"] != "core" || len(c.Labels) != 1 {
+		t.Errorf("Labels = %v, want map[team:core]", c.Labels)
+	}
+	if c.Log["level"] != "debug" || len(c.Log) != 1 {
+		t.Errorf("Log = %v, want map[level:debug]", c.Log)
+	}
+	m, ok, err := r.GetStringMap("labels")
+	if err != nil || !ok || m["team"] != "core" {
+		t.Errorf("GetStringMap(labels) = %v, %v, %v", m, ok, err)
+	}
+
+	// A parent from a higher layer still wins over lower keys below.
+	if err := r.Set("log", "quiet"); err != nil {
+		t.Fatal(err)
+	}
+	if v, _, _ := r.Get("log"); v.String() != "quiet" {
+		t.Errorf("Get(log) after Set = %v, want quiet", v)
+	}
+}
+
+// Binding a field whose spelling hides another key's listing does not
+// change what lookups of that key's parent find.
+func TestResolve_BindKeepsParentReadable(t *testing.T) {
+	t.Setenv("APP_MAX_CONNS", "5")
+	r, err := New(WithoutWatch(), WithSource(NewOSEnvSource(WithEnvPrefix("APP_"))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.IsSet("max") {
+		t.Fatal("max not set before bind")
+	}
+	var c struct{ MaxConns int }
+	if err := r.Bind(&c); err != nil {
+		t.Fatal(err)
+	}
+	if !r.IsSet("max") {
+		t.Error("max not set after bind")
+	}
+	m, ok, err := r.GetStringMap("max")
+	if err != nil || !ok || fmt.Sprint(m["conns"]) != "5" {
+		t.Errorf("GetStringMap(max) = %v, %v, %v", m, ok, err)
+	}
+	if got := r.Snapshot().Keys(); len(got) != 1 || got[0].String() != "max_conns" {
+		t.Errorf("Keys = %v, want [max_conns]", got)
+	}
+}
+
+// A scalar set at a grandparent leaves an entry inside a map value at
+// the parent readable.
+func TestResolve_ScalarGrandparentKeepsMapEntry(t *testing.T) {
+	ms := NewMapSource("m", map[string]any{"a": map[string]any{"b": map[string]string{"c": "1"}}})
+	r, err := New(WithoutWatch(), WithSource(ms))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Set("a", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok, _ := r.Get("a.b.c"); !ok || v.String() != "1" {
+		t.Errorf("Get(a.b.c) = %v, %v; want 1", v, ok)
+	}
+	var c struct {
+		A struct{ B struct{ C string } }
+	}
+	if err := r.Bind(&c); err != nil {
+		t.Fatal(err)
+	}
+	if c.A.B.C != "1" {
+		t.Errorf("bound a.b.c = %q, want 1", c.A.B.C)
+	}
+}
+
+// Save to TOML writes an unsigned integer above the int64 range as its
+// decimal text, which binds back unchanged.
+func TestTOML_SaveBigUint(t *testing.T) {
+	r, err := New(WithoutWatch())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Set("n", uint64(math.MaxUint64)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Set("list", []any{uint64(math.MaxUint64), 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetDefault("d", uint64(math.MaxUint64)); err != nil {
+		t.Fatal(err)
+	}
+	out, err := r.SaveString(WithSaveFormat(FormatTOML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := NewBufferSource("back", FormatTOML, []byte(out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := New(WithoutWatch(), WithSource(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		N    uint64
+		List []uint64
+	}
+	if err := back.Bind(&c); err != nil {
+		t.Fatalf("bind %q: %v", out, err)
+	}
+	if c.N != math.MaxUint64 || len(c.List) != 2 || c.List[0] != math.MaxUint64 || c.List[1] != 1 {
+		t.Errorf("read back %+v from %q", c, out)
+	}
+	if _, err := r.GenerateTemplate(FormatTOML); err != nil {
+		t.Errorf("GenerateTemplate: %v", err)
+	}
+}
+
+// A null value takes the field's `default=`, with or without
+// `required`, at top level and in struct elements.
+func TestBind_NullTakesDefault(t *testing.T) {
+	file, err := NewBufferSource("file", "yaml", []byte("port: ~\nservers:\n  - port: ~\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(WithoutWatch(), WithSource(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type server struct {
+		Port    int `recon:"port,default=8080"`
+		PortReq int `recon:"port,default=9090,required"`
+	}
+	var c struct {
+		Port    int      `recon:"port,default=8080"`
+		PortReq int      `recon:"port,default=9090,required"`
+		Servers []server `recon:"servers"`
+	}
+	if err := r.Bind(&c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Port != 8080 || c.PortReq != 9090 {
+		t.Errorf("top level: port=%d portReq=%d, want 8080 9090", c.Port, c.PortReq)
+	}
+	if len(c.Servers) != 1 || c.Servers[0].Port != 8080 || c.Servers[0].PortReq != 9090 {
+		t.Errorf("servers = %+v, want [{8080 9090}]", c.Servers)
+	}
+}
+
+// An empty `fromFile` path in a struct element is rejected as at top
+// level.
+func TestBind_ElementFromFileEmptyPath(t *testing.T) {
+	r, err := New(WithoutWatch(), WithSource(NewMapSource("m", map[string]any{
+		"items": []any{map[string]any{"key": ""}},
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		Items []struct {
+			Key string `recon:"key,fromFile"`
+		} `recon:"items"`
+	}
+	if err := r.Bind(&c); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("err = %v, want ErrInvalidPath", err)
+	}
+}
+
+// A time of day fills a time.Time field only when the field sets no
+// `layout=`; date and date-time forms are accepted either way.
+func TestBind_TimeOfDayOnlyWithoutLayout(t *testing.T) {
+	r, err := New(WithoutWatch(), WithSource(NewMapSource("m", map[string]any{
+		"d": "12:30", "e": "2024-01-02T03:04:05Z", "f": "12:30",
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bad struct {
+		D time.Time `recon:"d,layout=2006-01-02"`
+	}
+	if err := r.Bind(&bad); !errors.Is(err, ErrCoercion) {
+		t.Errorf("layout=2006-01-02 with 12:30: err = %v, want ErrCoercion", err)
+	}
+	var good struct {
+		E time.Time `recon:"e,layout=2006-01-02"`
+		F time.Time `recon:"f"`
+	}
+	if err := r.Bind(&good); err != nil {
+		t.Fatal(err)
+	}
+	if good.E.Year() != 2024 || good.F.Hour() != 12 || good.F.Minute() != 30 {
+		t.Errorf("e=%v f=%v", good.E, good.F)
+	}
+}
+
+// A dotenv file loads with bytes that are not UTF-8 in its comments;
+// only keys and values must be UTF-8.
+func TestDotenv_NonUTF8CommentLoads(t *testing.T) {
+	m, err := Dotenv.Decode([]byte("# caf\xe9\nA=1 # caf\xe9\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m["A"] != "1" {
+		t.Errorf("A = %v, want 1", m["A"])
+	}
+	_, err = Dotenv.Decode([]byte("# ok\nA=1\nB=caf\xe9\n"))
+	pe, ok := err.(PositionError)
+	if !ok {
+		t.Fatalf("value: err = %v, want a PositionError", err)
+	}
+	if line, _ := pe.Position(); line != 3 {
+		t.Errorf("value: line %d, want 3 (%v)", line, err)
+	}
+}
+
+// A secret marked while a source holds changes that would fail a
+// rebuild is still redacted by the current snapshot.
+func TestMarkSecret_RedactsWhenRebuildWouldFail(t *testing.T) {
+	ms := NewMapSource("m", map[string]any{"port": 1, "pw": "hunter2"})
+	r, err := New(WithoutWatch(), WithSource(ms),
+		WithSchema([]byte(`{"properties":{"port":{"type":"integer"}}}`)),
+		WithSecretRedactor(func(string) string { return "***" }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms.Replace(map[string]any{"port": "bad", "pw": "hunter2"})
+	var c struct {
+		Pw string `recon:"pw,secret"`
+	}
+	_ = r.Bind(&c)
+	snap := r.Snapshot()
+	if !snap.IsSecret(ParsePath("pw")) {
+		t.Error("snapshot does not report pw as secret")
+	}
+	if s := snap.String(); strings.Contains(s, "hunter2") {
+		t.Errorf("String leaks the secret:\n%s", s)
+	}
+}
+
+// Get[uint64] and Get[uint] read unsigned integers, including those
+// above the int64 range, and reject negative ones and strings.
+func TestGet_Unsigned(t *testing.T) {
+	r, err := New(WithoutWatch())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetValues(map[string]any{"big": uint64(math.MaxUint64), "n": 7, "neg": -1, "s": "7"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := Get[uint64](r, "big"); err != nil || !ok || got != math.MaxUint64 {
+		t.Errorf("Get[uint64](big) = %d, %v, %v", got, ok, err)
+	}
+	if got, ok, err := Get[uint](r, "n"); err != nil || !ok || got != 7 {
+		t.Errorf("Get[uint](n) = %d, %v, %v", got, ok, err)
+	}
+	if _, _, err := Get[uint64](r, "neg"); !errors.Is(err, ErrCoercion) {
+		t.Errorf("Get[uint64](neg) err = %v, want ErrCoercion", err)
+	}
+	if _, _, err := Get[uint64](r, "s"); !errors.Is(err, ErrTypeMismatch) {
+		t.Errorf("Get[uint64](s) err = %v, want ErrTypeMismatch", err)
+	}
+}
+
+// UnmarshalKey finds an underscore key in the environment as a bound
+// field does.
+func TestUnmarshalKey_UnderscoreEnvName(t *testing.T) {
+	t.Setenv("APP_MAX_CONNS", "5")
+	r, err := New(WithoutWatch(), WithSource(NewOSEnvSource(WithEnvPrefix("APP_"))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := r.UnmarshalKey("max_conns", &n); err != nil || n != 5 {
+		t.Fatalf("UnmarshalKey(max_conns) = %d, %v; want 5", n, err)
+	}
+}
+
+// An integer literal beyond uint64 reaches a validator as a number:
+// it passes `type: number` and fails `type: string`.
+func TestJSONSchema_BigIntegerIsNumber(t *testing.T) {
+	num, err := NewJSONSchemaValidator([]byte(`{"properties": {"f": {"type": "number"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	str, err := NewJSONSchemaValidator([]byte(`{"properties": {"f": {"type": "string"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []Codec{JSON, JSONC, YAML} {
+		doc := `{"f": 100000000000000000000, "g": -100000000000000000000}`
+		if c == YAML {
+			doc = "f: 100000000000000000000\ng: 0x1ffffffffffffffff\n"
+		}
+		m, err := c.Decode([]byte(doc))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, isFloat := m["f"].(float64); isFloat {
+			continue // a yaml dependency that reads such integers as floats
+		}
+		if _, ok := m["f"].(json.Number); !ok {
+			t.Fatalf("%s: f = %#v, want a json.Number", c.Name(), m["f"])
+		}
+		if c == YAML && m["g"] != json.Number("36893488147419103231") {
+			t.Fatalf("yaml: g = %#v, want json.Number in decimal", m["g"])
+		}
+		r := newRegistry(t, WithoutWatch(), WithSource(NewMapSource("c", m)), WithValidator(num))
+		if err := r.Validate(); err != nil {
+			t.Fatalf("%s type number: %v", c.Name(), err)
+		}
+		r = newRegistry(t, WithoutWatch(), WithSource(NewMapSource("c", m)))
+		if err := str.Validate(r.Snapshot().AsMap()); err == nil {
+			t.Fatalf("%s: type string accepted an unquoted integer", c.Name())
+		}
+		var cfg struct {
+			F float64 `recon:"f"`
+			S string  `recon:"f"`
+		}
+		if err := r.Bind(&cfg); err != nil || cfg.F != 1e20 || cfg.S != "100000000000000000000" {
+			t.Fatalf("%s bind: %v %+v", c.Name(), err, cfg)
+		}
+		out, err := r.SaveString(WithSaveFormat(FormatJSON))
+		if err != nil || !strings.Contains(out, `"f":100000000000000000000`) {
+			t.Fatalf("%s Save json: %v %s", c.Name(), err, out)
+		}
+		if _, err := r.SaveString(WithSaveFormat(FormatTOML)); err != nil {
+			t.Fatalf("%s Save toml: %v", c.Name(), err)
+		}
+	}
+}
+
+// A map or `any` field takes values in the shape JSON and YAML give
+// them, whatever the format: times as RFC 3339 text and unsigned
+// integers above int64 as uint64.
+func TestBind_AnyTakesJSONShape(t *testing.T) {
+	file, err := NewBufferSource("t", FormatTOML, []byte("[m]\nwhen = 2024-01-02T03:04:05Z\nday = 2024-01-02\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(WithoutWatch(), WithSource(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Set("m.big", uint64(math.MaxUint64)); err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		M    map[string]any
+		When any `recon:"m.when"`
+	}
+	if err := r.Bind(&c); err != nil {
+		t.Fatal(err)
+	}
+	if c.M["when"] != "2024-01-02T03:04:05Z" || c.When != "2024-01-02T03:04:05Z" || c.M["day"] != "2024-01-02" {
+		t.Errorf("times: %#v, %#v", c.M, c.When)
+	}
+	if c.M["big"] != uint64(math.MaxUint64) {
+		t.Errorf("big = %#v, want uint64", c.M["big"])
+	}
+}
+
+// A JSON or JSONC document holding only null loads as empty, as YAML's
+// ~ does.
+func TestJSON_NullDocumentIsEmpty(t *testing.T) {
+	for _, c := range []Codec{JSON, JSONC, YAML} {
+		m, err := c.Decode([]byte(" null\n"))
+		if err != nil || len(m) != 0 {
+			t.Errorf("%s: %v, %v", c.Name(), m, err)
+		}
 	}
 }

@@ -30,10 +30,11 @@ var reservedSourceNames = map[string]struct{}{
 // Configuration files are held as leaves: a YAML section
 // db: {host: h, port: 5} is the two keys db.host and db.port. When one
 // layer sets a key and another sets keys below it, every one of them
-// stays readable through Get and Bind. Where the snapshot is written as
-// a single tree ([Snapshot.AsMap], [Registry.Save] and the validator
-// input), the higher-precedence side of such a conflict wins; when both
-// come from the same layer, the keys below win.
+// stays readable through Get and Bind. Where the snapshot is read or
+// written as a single tree (Get of the key itself, [Snapshot.AsMap],
+// [Registry.Save] and the validator input), the higher-precedence side
+// of such a conflict wins; when both come from the same layer, the keys
+// below win.
 type Snapshot struct {
 	// values maps canonical path string to resolved Value. Alias paths
 	// are pre-resolved at build time so values[alias] == values[canon].
@@ -47,6 +48,18 @@ type Snapshot struct {
 	// holds their canonical strings in the same order.
 	keys    []Path
 	keyStrs []string
+
+	// lookupKeys and lookupPaths list every resolved key, sorted, for
+	// reads: unlike keyStrs they keep the spellings left out of the
+	// listed views. They share keyStrs and keys when none is left out.
+	lookupKeys  []string
+	lookupPaths []Path
+
+	// overridden holds the keys whose own value yields, on read, to the
+	// keys below them: a key below comes from a layer of higher
+	// precedence, or from the same layer while the key's own value is
+	// not a map.
+	overridden map[string]struct{}
 
 	// sourceNames is the registered source list in precedence order
 	// (first = highest).
@@ -82,9 +95,11 @@ func (s *Snapshot) secrets() secretMatcher {
 // Get returns the resolved value at p. The bool reports whether any
 // layer supplied a value; an empty-string value counts as set.
 //
-// When no layer set p itself but keys below it are set, Get returns a
-// [MapKind] value assembled from them, each at its own precedence, so a
-// map section read from a file can be fetched or bound as a whole. Its
+// When keys below p are set, Get returns a [MapKind] value assembled
+// from them unless a layer of higher precedence set p itself, so a map
+// section read from a file can be fetched or bound as a whole and a
+// null or scalar left at p by a lower layer does not hide it. Each key
+// in the assembled map resolves as in [Snapshot.AsMap]; its
 // [Value.Source] is the highest-precedence contributor. When a layer
 // set a map at a parent of p, Get returns the entry inside it.
 func (s *Snapshot) Get(p Path) (Value, bool) {
@@ -98,6 +113,12 @@ func (s *Snapshot) Get(p Path) (Value, bool) {
 // nil, in which case it is parsed from ks only when needed.
 func (s *Snapshot) lookup(ks string, p Path) (Value, bool) {
 	if v, ok := s.values[ks]; ok {
+		if _, below := s.overridden[ks]; !below {
+			return v, true
+		}
+		if sv, ok := s.lookupSubtree(ks, p); ok {
+			return sv, true
+		}
 		return v, true
 	}
 	if v, ok := s.lookupInParent(ks); ok {
@@ -107,44 +128,78 @@ func (s *Snapshot) lookup(ks string, p Path) (Value, bool) {
 }
 
 // lookupInParent finds ks inside a map value stored at one of its
-// parents.
+// parents. When several parents hold it, the one from the
+// highest-precedence layer wins, and the nearest parent among equals.
 func (s *Snapshot) lookupInParent(ks string) (Value, bool) {
-	var parent Value
-	at := -1
+	var (
+		found    Value
+		foundAt  string
+		ok       bool
+		ranks    map[string]int
+		bestRank int
+	)
 	topLevelDelims(ks, func(i int) bool {
-		if v, ok := s.values[ks[:i]]; ok {
-			parent, at = v, i
-			return false
+		parent, has := s.values[ks[:i]]
+		if !has || parent.Kind() != MapKind {
+			return true
 		}
+		v, hit := entryIn(parent, ks[i+1:])
+		if !hit {
+			return true
+		}
+		if ok {
+			if ranks == nil {
+				ranks = s.rankIndex()
+				bestRank = s.rankOf(ranks, foundAt)
+			}
+			r := s.rankOf(ranks, ks[:i])
+			if r > bestRank {
+				return true
+			}
+			bestRank = r
+		}
+		found, foundAt, ok = v.withSource(parent.Source()), ks[:i], true
 		return true
 	})
-	if at < 0 || parent.Kind() != MapKind {
-		return Value{}, false
-	}
-	cur := parent
-	for _, seg := range ParsePath(ks[at+1:]) {
-		m, err := cur.AsMap()
+	return found, ok
+}
+
+// entryIn returns the entry at the path rest inside the map value m.
+func entryIn(m Value, rest string) (Value, bool) {
+	cur := m
+	for _, seg := range ParsePath(rest) {
+		mm, err := cur.AsMap()
 		if err != nil {
 			return Value{}, false
 		}
-		next, ok := m[seg]
+		next, ok := mm[seg]
 		if !ok {
 			return Value{}, false
 		}
 		cur = next
 	}
-	return cur.withSource(parent.Source()), true
+	return cur, true
+}
+
+// rankOf is the precedence rank of the layer that won key k.
+func (s *Snapshot) rankOf(ranks map[string]int, k string) int {
+	winner := ""
+	if srcs := s.sources[k]; len(srcs) > 0 {
+		winner = srcs[0]
+	}
+	return rankFor(ranks, winner, len(s.sourceNames))
 }
 
 // lookupSubtree assembles a [MapKind] value from the keys below ks.
+// A conflict between keys below ks resolves as in [Snapshot.AsMap].
 func (s *Snapshot) lookupSubtree(ks string, p Path) (Value, bool) {
 	if ks == "" {
 		return Value{}, false
 	}
 	prefix := ks + DefaultDelimiter
-	lo := sort.SearchStrings(s.keyStrs, prefix)
+	lo := sort.SearchStrings(s.lookupKeys, prefix)
 	hi := lo
-	for hi < len(s.keyStrs) && strings.HasPrefix(s.keyStrs[hi], prefix) {
+	for hi < len(s.lookupKeys) && strings.HasPrefix(s.lookupKeys[hi], prefix) {
 		hi++
 	}
 	if lo == hi {
@@ -153,24 +208,31 @@ func (s *Snapshot) lookupSubtree(ks string, p Path) (Value, bool) {
 	if p == nil {
 		p = ParsePath(ks)
 	}
+	keys := make([]string, 0, hi-lo)
+	for _, k := range s.lookupKeys[lo:hi] {
+		if _, isAlias := s.aliases[k]; !isAlias {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return Value{}, false
+	}
+	shadowed := s.shadowedKeys(keys)
+	ranks := s.rankIndex()
 	out := map[string]any{}
 	best, bestRank := "", -1
-	ranks := s.rankIndex()
-	found := false
-	for i := lo; i < hi; i++ {
-		k := s.keyStrs[i]
+	for i, k := range s.lookupKeys[lo:hi] {
 		if _, isAlias := s.aliases[k]; isAlias {
 			continue
 		}
+		if _, drop := shadowed[k]; drop {
+			continue
+		}
 		v := s.values[k]
-		setNested(out, s.keys[i][len(p):], unwrapValueDeep(v))
-		found = true
+		setNested(out, s.lookupPaths[lo+i][len(p):], unwrapValueDeep(v))
 		if r := rankFor(ranks, v.Source(), len(s.sourceNames)); bestRank < 0 || r < bestRank {
 			best, bestRank = v.Source(), r
 		}
-	}
-	if !found {
-		return Value{}, false
 	}
 	return NewValue(out).withSource(best), true
 }
@@ -253,16 +315,19 @@ func (s *Snapshot) AsMap() map[string]any {
 // side from the lower-precedence layer. Keys from the same layer both
 // stay, and the keys below win when written in sorted order.
 func (s *Snapshot) shadowedAmong(idx []int) map[string]struct{} {
+	keys := make([]string, len(idx))
+	for j, i := range idx {
+		keys[j] = s.keyStrs[i]
+	}
+	return s.shadowedKeys(keys)
+}
+
+// shadowedKeys is [Snapshot.shadowedAmong] for a list of keys.
+func (s *Snapshot) shadowedKeys(keys []string) map[string]struct{} {
 	ranks := s.rankIndex()
-	n := len(s.sourceNames)
-	rank := make(map[string]int, len(idx))
-	for _, i := range idx {
-		k := s.keyStrs[i]
-		winner := ""
-		if srcs := s.sources[k]; len(srcs) > 0 {
-			winner = srcs[0]
-		}
-		rank[k] = rankFor(ranks, winner, n)
+	rank := make(map[string]int, len(keys))
+	for _, k := range keys {
+		rank[k] = s.rankOf(ranks, k)
 	}
 	var out map[string]struct{}
 	drop := func(k string) {
@@ -271,8 +336,7 @@ func (s *Snapshot) shadowedAmong(idx []int) map[string]struct{} {
 		}
 		out[k] = struct{}{}
 	}
-	for _, i := range idx {
-		k := s.keyStrs[i]
+	for _, k := range keys {
 		rk := rank[k]
 		topLevelDelims(k, func(j int) bool {
 			ra, ok := rank[k[:j]]
@@ -479,6 +543,19 @@ func buildSnapshot(is snapshotInputs) *Snapshot {
 			s.keys[i] = ParsePath(k)
 		}
 	}
+	s.lookupKeys, s.lookupPaths = s.keyStrs, s.keys
+	if len(s.keyStrs) < len(s.values) {
+		s.lookupKeys = slices.Sorted(maps.Keys(s.values))
+		s.lookupPaths = make([]Path, len(s.lookupKeys))
+		for i, k := range s.lookupKeys {
+			if p, ok := paths[k]; ok {
+				s.lookupPaths[i] = p
+			} else {
+				s.lookupPaths[i] = ParsePath(k)
+			}
+		}
+	}
+	s.overridden = overriddenParents(s)
 	return s
 }
 
@@ -668,4 +745,42 @@ func isNonEmptyMap(v any) bool {
 	}
 	rv := reflect.ValueOf(v)
 	return rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String && rv.Len() > 0
+}
+
+// overriddenParents returns the keys of s whose own value yields, on
+// read, to the keys below them; see the overridden field.
+func overriddenParents(s *Snapshot) map[string]struct{} {
+	var out map[string]struct{}
+	var ranks map[string]int
+	for _, k := range s.lookupKeys {
+		if _, isAlias := s.aliases[k]; isAlias {
+			continue
+		}
+		rk := -1
+		topLevelDelims(k, func(j int) bool {
+			a := k[:j]
+			av, ok := s.values[a]
+			if !ok {
+				return true
+			}
+			if _, isAlias := s.aliases[a]; isAlias {
+				return true
+			}
+			if ranks == nil {
+				ranks = s.rankIndex()
+			}
+			if rk < 0 {
+				rk = s.rankOf(ranks, k)
+			}
+			ra := s.rankOf(ranks, a)
+			if rk < ra || (rk == ra && av.Kind() != MapKind) {
+				if out == nil {
+					out = map[string]struct{}{}
+				}
+				out[a] = struct{}{}
+			}
+			return true
+		})
+	}
+	return out
 }

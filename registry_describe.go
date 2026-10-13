@@ -140,13 +140,13 @@ func (r *Registry) DescribeKey(key string) (KeyDescription, bool) {
 	}, true
 }
 
-// MarkSecret records key as containing sensitive data and rebuilds
-// the snapshot so [Registry.Describe], [Registry.Save], [Snapshot.String]
-// and bind and validation errors redact it immediately. Every key below
-// key is covered too, and so are the key an alias resolves to and the
-// aliases of a marked key. An empty key or a closed registry is a
-// no-op; repeated calls are harmless. A rebuild failure is logged, not
-// returned (with secret values redacted).
+// MarkSecret records key as containing sensitive data, in the registry
+// and in its current snapshot, so [Registry.Describe], [Registry.Save],
+// [Snapshot.String] and bind and validation errors redact it
+// immediately; a [*Snapshot] obtained earlier keeps its own secret set.
+// Every key below key is covered too, and so are the key an alias
+// resolves to and the aliases of a marked key. An empty key or a closed
+// registry is a no-op; repeated calls are harmless.
 func (r *Registry) MarkSecret(key string) {
 	if key == "" {
 		return
@@ -157,14 +157,15 @@ func (r *Registry) MarkSecret(key string) {
 	r.markSecrets([]string{r.fullKey(key)})
 }
 
-// markSecrets adds the full keys to the secret set and rebuilds the
-// snapshot once, only when the set grew.
+// markSecrets adds the full keys to the secret set and, when the set
+// grew, swaps in a copy of the current snapshot carrying it. The values
+// are unchanged, so nothing is re-read or re-validated.
 func (r *Registry) markSecrets(keys []string) {
 	if len(keys) == 0 || r.state.closed.Load() {
 		return
 	}
 	r.state.mu.Lock()
-	var added []string
+	added := 0
 	for _, k := range keys {
 		if _, ok := r.state.secretKeys[k]; ok {
 			continue
@@ -173,17 +174,15 @@ func (r *Registry) markSecrets(keys []string) {
 			r.state.secretKeys = map[string]struct{}{}
 		}
 		r.state.secretKeys[k] = struct{}{}
-		added = append(added, k)
+		added++
 	}
-	var rebuildErr error
-	if len(added) > 0 {
-		rebuildErr = r.rebuildSnapshotLocked()
+	if cur := r.state.snapshot.Load(); cur != nil && added > 0 {
+		next := *cur
+		next.secretKeys = cloneStringSet(r.state.secretKeys)
+		next.redactor = r.state.opts.secretRedactor
+		r.state.snapshot.Store(&next)
 	}
 	r.state.mu.Unlock()
-	if rebuildErr != nil {
-		r.state.logger.Warn("recon: MarkSecret rebuild rejected",
-			"keys", added, "err", rebuildErr)
-	}
 }
 
 // IsSecret reports whether key has been marked secret, either via

@@ -2,6 +2,8 @@ package recon
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -257,7 +259,7 @@ func (r *Registry) AllKeys() []string {
 }
 
 // Get is the generic typed accessor. Supported T: string, bool, int,
-// int64, float64, time.Time, time.Duration, []string, [Value]. T must
+// int64, uint, uint64, float64, time.Time, time.Duration, []string, [Value]. T must
 // match the value's wire kind as the matching [Value] As* method
 // requires: only time.Time and time.Duration are parsed from strings,
 // so an environment variable read as int returns [ErrTypeMismatch].
@@ -328,6 +330,14 @@ func coerceValueAny[T any](v Value, zero *T) (any, error) {
 	case int64:
 		i, err := v.AsInt64()
 		return i, err
+	case uint:
+		u, err := valueAsUint64(v)
+		if err == nil && u > math.MaxUint {
+			return uint(0), fmt.Errorf("%w: %d overflows uint", ErrCoercion, u)
+		}
+		return uint(u), err
+	case uint64:
+		return valueAsUint64(v)
 	case float64:
 		f, err := v.AsFloat64()
 		return f, err
@@ -355,6 +365,26 @@ func coerceValueAny[T any](v Value, zero *T) (any, error) {
 		return out, nil
 	}
 	return nil, fmt.Errorf("%w: %T not handled by Get[T]", ErrTypeMismatch, *zero)
+}
+
+// valueAsUint64 is [Value.AsInt64] for an unsigned result: an integer
+// that is not negative, or one above [math.MaxInt64].
+func valueAsUint64(v Value) (uint64, error) {
+	if v.bigUint {
+		u, err := strconv.ParseUint(mustAsString(v), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%w: %w", ErrCoercion, err)
+		}
+		return u, nil
+	}
+	i, err := v.AsInt64()
+	if err != nil {
+		return 0, err
+	}
+	if i < 0 {
+		return 0, fmt.Errorf("%w: %d is negative", ErrCoercion, i)
+	}
+	return uint64(i), nil
 }
 
 // lookupKey resolves key in snap. On a root registry a key without "["

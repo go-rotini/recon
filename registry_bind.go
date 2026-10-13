@@ -26,7 +26,11 @@ import (
 // A field whose type implements [Unmarshaler], UnmarshalEnv(string)
 // error, or [encoding.TextUnmarshaler] decodes itself, in that order.
 // A map, `any` or struct field also binds from a configuration file
-// section held as leaf keys.
+// section held as leaf keys. An `any` field, or an `any` element of a
+// map or slice, takes a value in the shape a JSON or YAML file gives
+// it, whatever the format: a time as RFC 3339 text, an integer above
+// the int64 range as a uint64, and one beyond the uint64 range as a
+// [encoding/json.Number].
 //
 // Struct elements of slices and maps take their field names from the
 // same tags as top-level fields (a lowercased Go name is accepted too)
@@ -35,12 +39,14 @@ import (
 // `expand`, `transform=` and the value-format options. `path=`,
 // `source=`, `format=`, `immutable`, `deprecated` and `unset` apply to
 // top-level fields only. A slice or map whose element type has a secret
-// field is marked secret as a whole.
+// field is marked secret as a whole, so its other fields are redacted
+// too.
 //
-// A null value sets the field to its zero value, except that it does
-// not satisfy `required`. A pointer to a struct type already being
-// bound is followed only where keys exist below its path, so
-// self-referencing types bind as deep as the data goes.
+// A null value sets the field to its zero value, unless the field has a
+// `default=`, which fills it; a null does not satisfy `required`. A
+// pointer to a struct type already being bound is followed only where
+// keys exist below its path, so self-referencing types bind as deep as
+// the data goes.
 func (r *Registry) Bind(target any, opts ...DecodeOption) error {
 	return r.BindContext(context.Background(), target, opts...)
 }
@@ -112,7 +118,9 @@ func (r *Registry) Unmarshal(target any, opts ...DecodeOption) error {
 // are bound (a map, slice, scalar, time.Time, [Secret], or a type that
 // decodes itself) receives the value at key itself, converted as a
 // bound field of that type would be, custom decoders included; a key no
-// layer sets leaves it unchanged.
+// layer sets leaves it unchanged. Like a bound field, key is looked up
+// in every source, so "max_conns" finds APP_MAX_CONNS; [Registry.Get]
+// sees only the keys sources list (max.conns) and the ones a bind read.
 func (r *Registry) UnmarshalKey(key string, target any, opts ...DecodeOption) error {
 	if rv := reflect.ValueOf(target); key != "" && rv.Kind() == reflect.Pointer && !rv.IsNil() &&
 		!isWalkableStructType(rv.Elem().Type()) {
@@ -134,6 +142,7 @@ func (r *Registry) unmarshalKeyValue(key string, dest reflect.Value, opts []Deco
 	if isSecretType(dest.Type()) || holdsSecrets(dest.Type(), cfg.tagName) {
 		r.MarkSecret(key)
 	}
+	r.resolveBindPaths([]Path{r.fullPath(ParsePath(key))})
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
 		return err

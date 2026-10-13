@@ -2,9 +2,13 @@ package recon
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
+	"reflect"
+	"strings"
 
 	"github.com/go-rotini/yaml"
 )
@@ -15,7 +19,8 @@ type yamlCodec struct{}
 
 // YAML is the [Codec] for YAML 1.2.2 documents (and the KYAML strict
 // subset), part of [DefaultCodecs]. Integers decode as [JSON]'s do: as
-// int64, or as uint64 above the int64 range.
+// int64, as uint64 above the int64 range, and as a [json.Number] (in
+// decimal) outside both ranges.
 var YAML Codec = yamlCodec{}
 
 func (yamlCodec) Name() string         { return FormatYAML }
@@ -64,6 +69,7 @@ func (yamlCodec) Decode(data []byte) (map[string]any, error) {
 		return nil, fmt.Errorf("%w: yaml root must be a mapping, got %T",
 			ErrUnsupportedFormat, v)
 	}
+	yamlNumbers(m)
 	return m, nil
 }
 
@@ -114,4 +120,40 @@ func yamlDecodeError(err error) error {
 		return atPosition(FormatYAML, err, line, 0)
 	}
 	return fmt.Errorf("recon: yaml decode: %w", err)
+}
+
+// yamlPkgPath is the import path of the yaml package.
+var yamlPkgPath = reflect.TypeFor[yaml.Encoder]().PkgPath()
+
+// yamlNumbers replaces, in place, each number the yaml package hands
+// back as its own Number text (an integer outside the int64 and uint64
+// ranges, or a float beyond float64) by a [json.Number] in decimal for
+// an integer and by its text for a float.
+func yamlNumbers(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, e := range x {
+			x[k] = yamlNumbers(e)
+		}
+		return x
+	case []any:
+		for i, e := range x {
+			x[i] = yamlNumbers(e)
+		}
+		return x
+	}
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() || rv.Kind() != reflect.String || rv.Type().Name() != "Number" || rv.Type().PkgPath() != yamlPkgPath {
+		return v
+	}
+	s := rv.String()
+	body := strings.TrimLeft(s, "+-")
+	base := 10
+	if len(body) > 1 && body[0] == '0' && (body[1] == 'x' || body[1] == 'o') {
+		base = 0
+	}
+	if z, ok := new(big.Int).SetString(strings.TrimPrefix(s, "+"), base); ok {
+		return json.Number(z.String())
+	}
+	return s
 }

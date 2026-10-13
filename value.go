@@ -1,11 +1,13 @@
 package recon
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -79,13 +81,21 @@ type Value struct {
 	// bigUint marks [StringKind] decimal text made from a uint64 above
 	// math.MaxInt64, so encoding and validation see the number again.
 	bigUint bool
+
+	// bigInt marks [StringKind] decimal text of an integer outside the
+	// int64 and uint64 ranges, which encoding and validation see as a
+	// [json.Number].
+	bigInt bool
 }
 
 // NewValue wraps a Go value, inferring the [ValueKind] from its dynamic
 // type. Integer types convert to int64, except a uint or uint64 above
 // math.MaxInt64, which becomes its decimal [StringKind] text (it
 // still binds to a uint64 field, and [Registry.Save], [Snapshot.AsMap]
-// and a validator see it as the uint64). float32 widens to float64. Slices and
+// and a validator see it as the uint64). A [json.Number] converts as
+// the number it holds; an integer outside the int64 and uint64 ranges
+// becomes its decimal [StringKind] text, which Save, AsMap and a
+// validator see as the json.Number. float32 widens to float64. Slices and
 // arrays (other than []byte) convert element by element to [SliceKind],
 // and maps with string keys to [MapKind]. Other types become
 // [StringKind] via fmt.Sprint.
@@ -95,6 +105,8 @@ func NewValue(v any) Value {
 		return Value{kind: NullKind}
 	case Value:
 		return x
+	case json.Number:
+		return numberValue(x)
 	case string:
 		return Value{kind: StringKind, raw: x}
 	case bool:
@@ -205,6 +217,42 @@ func uintValue(u uint64) Value {
 	return Value{kind: IntKind, raw: int64(u)}
 }
 
+// numberValue is [NewValue] for a [json.Number]: an integer as
+// [numericValue] or, outside the int64 and uint64 ranges, as marked
+// decimal text; anything else as a float64, or as plain text when it
+// is not one.
+func numberValue(n json.Number) Value {
+	s := n.String()
+	if isIntegerText(s) {
+		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return Value{kind: IntKind, raw: i}
+		}
+		if u, err := strconv.ParseUint(s, 10, 64); err == nil {
+			return uintValue(u)
+		}
+		return Value{kind: StringKind, raw: s, bigInt: true}
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return Value{kind: FloatKind, raw: f}
+	}
+	return Value{kind: StringKind, raw: s}
+}
+
+// isIntegerText reports whether s is a decimal integer: an optional
+// minus sign and one or more digits.
+func isIntegerText(s string) bool {
+	s = strings.TrimPrefix(s, "-")
+	if s == "" {
+		return false
+	}
+	for i := range len(s) {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // NewRawValue wraps undecoded bytes plus a format hint in a Value.
 func NewRawValue(format string, data []byte) Value {
 	cp := make([]byte, len(data))
@@ -244,7 +292,8 @@ func (v Value) Any() any {
 // scalars unchanged, [SliceKind] → []any, [MapKind] → map[string]any,
 // recursively. Used by save/encode paths where [Value.Any]'s
 // map[string]Value / []Value would not round-trip. The text of a
-// uint64 above math.MaxInt64 becomes the uint64 again.
+// uint64 above math.MaxInt64 becomes the uint64 again, and that of a
+// larger integer a [json.Number].
 func unwrapValueDeep(v Value) any {
 	switch v.Kind() {
 	case StringKind:
@@ -252,6 +301,9 @@ func unwrapValueDeep(v Value) any {
 			if u, err := strconv.ParseUint(v.String(), 10, 64); err == nil {
 				return u
 			}
+		}
+		if v.bigInt {
+			return json.Number(v.String())
 		}
 		return v.Any()
 	case SliceKind:
@@ -371,7 +423,7 @@ func (v Value) AsTime() (time.Time, error) {
 		return t, nil
 	case StringKind:
 		s, _ := v.raw.(string)
-		t, err := parseTimeText(s, time.RFC3339)
+		t, err := parseTimeText(s, time.RFC3339, true)
 		if err != nil {
 			return time.Time{}, fmt.Errorf("%w: parse time %q: %w", ErrCoercion, s, err)
 		}
@@ -382,7 +434,8 @@ func (v Value) AsTime() (time.Time, error) {
 }
 
 // timeFallbackLayouts are tried, in order, when a time string does not
-// match the primary layout.
+// match the primary layout. The last [timeOfDayLayouts] of them are a
+// time of day, tried only when no layout was chosen.
 var timeFallbackLayouts = [...]string{
 	time.RFC3339Nano,
 	"2006-01-02T15:04:05.999999999",
@@ -394,14 +447,21 @@ var timeFallbackLayouts = [...]string{
 	"15:04",
 }
 
+const timeOfDayLayouts = 2
+
 // parseTimeText parses s with layout, then with each of
-// [timeFallbackLayouts]. The error is layout's.
-func parseTimeText(s, layout string) (time.Time, error) {
+// [timeFallbackLayouts], leaving out the time-of-day forms unless
+// timeOfDay. The error is layout's.
+func parseTimeText(s, layout string, timeOfDay bool) (time.Time, error) {
 	t, err := time.Parse(layout, s)
 	if err == nil {
 		return t, nil
 	}
-	for _, alt := range timeFallbackLayouts {
+	alts := timeFallbackLayouts[:]
+	if !timeOfDay {
+		alts = alts[:len(alts)-timeOfDayLayouts]
+	}
+	for _, alt := range alts {
 		if t2, e2 := time.Parse(alt, s); e2 == nil {
 			return t2, nil
 		}

@@ -250,7 +250,7 @@ func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, fp *fieldPlan, inhe
 	}
 	value, found := w.lookup(path, tag.Source, fp.aliases)
 	var nullFrom []string
-	if found && tag.Required && value.Kind() == NullKind {
+	if found && (tag.Required || tag.HasDefault) && value.Kind() == NullKind {
 		found, nullFrom = false, []string{value.Source()}
 	}
 	if found {
@@ -374,14 +374,7 @@ func isEmptyValue(v Value) bool {
 // isSecretType reports whether t is a [Secret], or a pointer, slice,
 // array or map whose elements are.
 func isSecretType(t reflect.Type) bool {
-	for {
-		switch t.Kind() {
-		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
-			t = t.Elem()
-			continue
-		}
-		break
-	}
+	t = elemBase(t)
 	return t.PkgPath() == secretTypePkg && strings.HasPrefix(t.Name(), "Secret[")
 }
 
@@ -411,14 +404,7 @@ var secretScanCache sync.Map // secretScanKey → bool
 // scanSecrets is [holdsSecrets] without the cache. seen lists the
 // struct types on the current path.
 func scanSecrets(t reflect.Type, tagName string, seen []reflect.Type) bool {
-	for {
-		switch t.Kind() {
-		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
-			t = t.Elem()
-			continue
-		}
-		break
-	}
+	t = elemBase(t)
 	if t.Kind() != reflect.Struct || isTimeTime(t) || slices.Contains(seen, t) {
 		return false
 	}
@@ -436,6 +422,25 @@ func scanSecrets(t reflect.Type, tagName string, seen []reflect.Type) bool {
 		}
 	}
 	return false
+}
+
+// elemBase strips pointers, slices, arrays and maps from t and returns
+// the type they lead to. A container type that leads back to itself
+// (type Tree map[string]Tree) is returned as is.
+func elemBase(t reflect.Type) reflect.Type {
+	var seen []reflect.Type
+	for {
+		switch t.Kind() {
+		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
+			if slices.Contains(seen, t) {
+				return t
+			}
+			seen = append(seen, t)
+			t = t.Elem()
+			continue
+		}
+		return t
+	}
 }
 
 // secretTypePkg is the import path of the package defining [Secret].

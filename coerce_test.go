@@ -3,7 +3,9 @@ package recon
 import (
 	"encoding/hex"
 	"errors"
+	"math"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -554,7 +556,11 @@ func TestCoerce_UnsupportedKind(t *testing.T) {
 
 func TestCoerce_Uint64AboveMaxInt64(t *testing.T) {
 	const big = uint64(1<<63 + 5)
-	for _, v := range []Value{NewValue(big), NewValue(uint(big)), NewValue("9223372036854775813")} {
+	vals := []Value{NewValue(big), NewValue("9223372036854775813")}
+	if strconv.IntSize == 64 {
+		vals = append(vals, NewValue(uint(big&math.MaxUint)))
+	}
+	for _, v := range vals {
 		var out uint64
 		if err := coerce(v, reflect.ValueOf(&out).Elem(), FieldTag{}); err != nil {
 			t.Fatalf("coerce %v (%s): %v", v.Any(), v.Kind(), err)

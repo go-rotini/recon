@@ -102,7 +102,10 @@ func coerceWith(v Value, dest reflect.Value, tag FieldTag, er elemRules) error {
 // coerceInterface assigns v to an empty-interface dest — an `any` field, or a
 // map[string]any / []any element. MapKind / SliceKind values recurse into
 // nested map[string]any / []any (so a whole subtree binds), and scalars take
-// their natural Go form. A non-empty interface dest is unsupported.
+// the form a JSON or YAML file gives them, whatever the format: a time as
+// RFC 3339 text, an integer above the int64 range as a uint64, and one
+// beyond the uint64 range as a [json.Number]. A non-empty interface dest
+// is unsupported.
 func coerceInterface(v Value, dest reflect.Value, er elemRules) error {
 	if dest.NumMethod() != 0 {
 		return fmt.Errorf("%w: cannot coerce %s into %s",
@@ -125,13 +128,15 @@ func coerceInterface(v Value, dest reflect.Value, er elemRules) error {
 		}
 		dest.Set(sv)
 		return nil
+	case NullKind:
+		dest.Set(reflect.Zero(dest.Type()))
+		return nil
+	case TimeKind:
+		// As text, the form a time takes in YAML and JSON.
+		dest.Set(reflect.ValueOf(v.String()))
+		return nil
 	default:
-		x := v.Any()
-		if x == nil {
-			dest.Set(reflect.Zero(dest.Type()))
-			return nil
-		}
-		dest.Set(reflect.ValueOf(x))
+		dest.Set(reflect.ValueOf(unwrapValueDeep(v)))
 		return nil
 	}
 }
@@ -567,7 +572,7 @@ func bindStructFields(m map[string]Value, dest reflect.Value, inlined []reflect.
 // bindElementField fills one field of a struct element from m.
 func bindElementField(m map[string]Value, fv reflect.Value, sf reflect.StructField, tag FieldTag, er elemRules) error {
 	sub, found := lookupElementKey(m, sf, tag)
-	if found && sub.Kind() == NullKind && tag.Required {
+	if found && sub.Kind() == NullKind && (tag.Required || tag.HasDefault) {
 		found = false
 	}
 	if !found {
@@ -581,6 +586,9 @@ func bindElementField(m map[string]Value, fv reflect.Value, sf reflect.StructFie
 		}
 	}
 	if tag.FromFile {
+		if sub.String() == "" {
+			return fmt.Errorf("%w: fromFile target path is empty", ErrInvalidPath)
+		}
 		data, err := readFromFile(sub.String())
 		if err != nil {
 			return fmt.Errorf("recon: fromFile %q: %w", sub.String(), err)
@@ -715,7 +723,8 @@ func fieldKeyFromTag(sf reflect.StructField) string {
 
 // coerceTime fills a time.Time destination. [TimeKind] passes through;
 // [StringKind] parses via tag.Layout (default RFC3339) and falls back
-// to the forms [Value.AsTime] accepts.
+// to the forms [Value.AsTime] accepts, without the time-of-day forms
+// when tag.Layout is set.
 func coerceTime(v Value, dest reflect.Value, tag FieldTag) error {
 	switch v.Kind() {
 	case TimeKind:
@@ -731,7 +740,7 @@ func coerceTime(v Value, dest reflect.Value, tag FieldTag) error {
 		if layout == "" {
 			layout = time.RFC3339
 		}
-		t, err := parseTimeText(s, layout)
+		t, err := parseTimeText(s, layout, tag.Layout == "")
 		if err == nil {
 			dest.Set(reflect.ValueOf(t))
 			return nil

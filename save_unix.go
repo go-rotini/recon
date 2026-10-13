@@ -9,14 +9,18 @@ import (
 )
 
 // keepOwner gives tmp the owner and group of the file info describes.
-// It is best effort: a caller not allowed to change them (EPERM) keeps
-// its own.
+// It is best effort: a caller not allowed to change the owner keeps its
+// own but still takes the group when it may (it belongs to that group),
+// and otherwise keeps both of its own.
 func keepOwner(tmp *os.File, info fs.FileInfo) {
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return
 	}
-	if err := tmp.Chown(int(st.Uid), int(st.Gid)); err != nil {
+	if err := tmp.Chown(int(st.Uid), int(st.Gid)); err == nil {
+		return
+	}
+	if err := tmp.Chown(-1, int(st.Gid)); err != nil {
 		return
 	}
 }

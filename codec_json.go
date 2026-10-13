@@ -15,7 +15,7 @@ type jsonCodec struct{}
 // JSON is the [Codec] for JSON documents, part of [DefaultCodecs]. An
 // integer literal decodes exactly, as YAML's do: as int64, so
 // 9007199254740993 keeps every digit, as uint64 above the int64 range,
-// and as its decimal text beyond the uint64 range. A literal with a
+// and as a [json.Number] outside the int64 and uint64 ranges. A literal with a
 // fraction or exponent decodes as float64; one beyond the float64 range
 // is an error. Input that is not valid UTF-8 is an error.
 var JSON Codec = jsonCodec{}
@@ -26,7 +26,7 @@ func (jsonCodec) Extensions() []string { return []string{".json"} }
 // Decode parses data as a JSON object, ignoring one leading UTF-8
 // byte-order mark. Arrays or scalars at the root are rejected with
 // wrapped [ErrUnsupportedFormat]; a document holding only white space
-// decodes as an empty map. A key repeated in one object is an error.
+// or a null decodes as an empty map. A key repeated in one object is an error.
 func (jsonCodec) Decode(data []byte) (map[string]any, error) {
 	data = stripBOM(data)
 	if isJSONSpace(data) {
@@ -51,6 +51,9 @@ func (jsonCodec) Decode(data []byte) (map[string]any, error) {
 			err = uerr
 		}
 		return nil, jsonDecodeError(err, data)
+	}
+	if v == nil {
+		return map[string]any{}, nil
 	}
 	m, ok := v.(map[string]any)
 	if !ok {
@@ -193,8 +196,8 @@ func jsonSyntaxOffset(e *json.SyntaxError) int64 {
 var errJSONTrailing = errors.New("invalid character after top-level value")
 
 // jsonNumber converts a JSON number literal: an integer that fits int64
-// becomes int64, one that fits uint64 a uint64, a larger integer its
-// decimal text, and anything with a fraction or exponent float64. ok is
+// becomes int64, one that fits uint64 a uint64, any other integer a
+// [json.Number], and anything with a fraction or exponent float64. ok is
 // false for a fraction or exponent literal beyond the float64 range.
 func jsonNumber(n json.Number) (v any, ok bool) {
 	s := n.String()
@@ -205,17 +208,25 @@ func jsonNumber(n json.Number) (v any, ok bool) {
 		if u, err := strconv.ParseUint(s, 10, 64); err == nil {
 			return u, true
 		}
-		return s, true
+		return n, true
 	}
 	f, err := strconv.ParseFloat(s, 64)
 	return f, err == nil
 }
 
 // errNumberRange reports a number literal whose fraction or exponent
-// form is beyond the float64 range.
+// form is beyond the float64 range. It wraps [strconv.ErrRange].
 func errNumberRange(s string) error {
-	return fmt.Errorf("number %s: %w", s, strconv.ErrRange)
+	return numberRangeError(s)
 }
+
+// numberRangeError is the text of a number literal beyond the float64
+// range.
+type numberRangeError string
+
+func (e numberRangeError) Error() string { return "value " + string(e) + " overflows float64" }
+
+func (numberRangeError) Unwrap() error { return strconv.ErrRange }
 
 // isJSONSpace reports whether b holds only JSON white space: space,
 // tab, line feed and carriage return.

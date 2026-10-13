@@ -3,6 +3,7 @@ package recon
 import (
 	"errors"
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/go-rotini/dotenv"
 )
@@ -21,17 +22,22 @@ func (dotenvCodec) Extensions() []string { return []string{".env"} }
 
 // Decode parses data as a `.env` document. Values are strings. It
 // accepts input up to [MaxFileSize], the cap recon puts on every file.
-// Input that is not valid UTF-8 is an error.
+// A key or value that is not valid UTF-8 is an error; other bytes, such
+// as those in comments, pass through.
 func (dotenvCodec) Decode(data []byte) (map[string]any, error) {
 	if len(data) == 0 {
 		return map[string]any{}, nil
 	}
-	if err := checkUTF8(FormatDotenv, data); err != nil {
-		return nil, err
-	}
 	f, err := dotenv.Parse(data, dotenv.WithMaxFileSize(MaxFileSize))
 	if err != nil {
 		return nil, dotenvDecodeError(err)
+	}
+	if !utf8.Valid(data) {
+		for _, e := range f.Entries() {
+			if e.Kind == dotenv.EntryAssignment && (!utf8.ValidString(e.Key) || !utf8.ValidString(e.Value)) {
+				return nil, &codecError{format: FormatDotenv, err: errInvalidUTF8, line: e.Pos.Line, col: e.Pos.Column, msg: errInvalidUTF8.Error()}
+			}
+		}
 	}
 	flat := f.ToMap()
 	out := make(map[string]any, len(flat))

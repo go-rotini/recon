@@ -132,6 +132,7 @@ func FuzzBind(f *testing.F) {
 		Timeout time.Duration `recon:"timeout"`
 		Rate    float64       `recon:"rate"`
 		Tags    []string      `recon:"tags"`
+		Tree    selfMap       `recon:"tree"`
 	}
 
 	f.Fuzz(func(t *testing.T, key, val string) {
