@@ -2,6 +2,7 @@ package recon
 
 import (
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -18,11 +19,20 @@ import (
 // [Registry] level. Use [WithEnvTransform] for a non-default forward
 // projection and [WithEnvKeyParser] for the inverse used by
 // [OSEnvSource.Keys].
+//
+// Without [WithEnvPrefix], [WithEnvVars] or [WithEnvKeyParser] the
+// source reports every variable in the environment (PATH, HOME, tokens),
+// so give it a prefix. [Registry.Save] leaves such a source's keys out
+// unless a bind read them.
 type OSEnvSource struct {
 	prefix    string
 	transform KeyTransform
 	parse     func(name string) Path
 	src       env.Source
+
+	// scoped is false when the source reads every environment variable:
+	// no prefix, explicit variables or key parser was given.
+	scoped bool
 
 	mu     sync.RWMutex
 	keys   []Path
@@ -72,6 +82,7 @@ func NewOSEnvSource(opts ...EnvOption) *OSEnvSource {
 		transform: transform,
 		parse:     parser,
 		src:       env.OSEnv(),
+		scoped:    cfg.prefix != "" || len(cfg.vars) > 0 || cfg.parser != nil,
 	}
 }
 
@@ -153,7 +164,7 @@ func (s *OSEnvSource) collectKeys() []Path {
 			continue
 		}
 		name := kv[:eq]
-		if s.prefix != "" && !strings.HasPrefix(name, s.prefix) {
+		if s.prefix != "" && !hasEnvPrefix(name, s.prefix) {
 			continue
 		}
 		p := s.parse(name)
@@ -168,4 +179,20 @@ func (s *OSEnvSource) collectKeys() []Path {
 		out[i] = k.path
 	}
 	return out
+}
+
+// nativeKey returns the environment variable name path is read from.
+func (s *OSEnvSource) nativeKey(path Path) string { return s.transform(path) }
+
+// envNamesFoldCase reports whether environment variable names are
+// case-insensitive, as on Windows.
+var envNamesFoldCase = runtime.GOOS == "windows"
+
+// hasEnvPrefix reports whether the variable name starts with prefix,
+// ignoring case where variable names are case-insensitive.
+func hasEnvPrefix(name, prefix string) bool {
+	if envNamesFoldCase {
+		return len(name) >= len(prefix) && strings.EqualFold(name[:len(prefix)], prefix)
+	}
+	return strings.HasPrefix(name, prefix)
 }

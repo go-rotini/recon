@@ -13,12 +13,13 @@ type BufferSource struct {
 	codec  Codec
 }
 
-// NewBufferSource decodes data with the codec supplied via
-// [WithBufferCodec] and returns a Source named name. The format string
-// is recorded for diagnostics but does not drive decoding.
+// NewBufferSource decodes data and returns a Source named name. The
+// codec is the one supplied via [WithBufferCodec], else the codec
+// format names in [DefaultCodecs]. One leading UTF-8 byte-order mark is
+// ignored.
 //
-// Returns wrapped [ErrUnsupportedFormat] when no codec is supplied,
-// and a [*ParseError] when decoding fails.
+// Returns wrapped [ErrUnsupportedFormat] when no codec resolves, and a
+// [*ParseError] when decoding fails.
 func NewBufferSource(name, format string, data []byte, opts ...BufferOption) (Source, error) {
 	cfg := bufferOptions{}
 	for _, opt := range opts {
@@ -26,9 +27,14 @@ func NewBufferSource(name, format string, data []byte, opts ...BufferOption) (So
 	}
 	codec := bufferCfgCodec(cfg)
 	if codec == nil {
-		return nil, fmt.Errorf("%w: BufferSource(%q): no codec supplied; pass recon.WithBufferCodec(c)",
-			ErrUnsupportedFormat, name)
+		c, ok := DefaultCodecs().ByName(format)
+		if !ok {
+			return nil, fmt.Errorf("%w: BufferSource(%q): no codec for format %q; pass recon.WithBufferCodec(c)",
+				ErrUnsupportedFormat, name, format)
+		}
+		codec = c
 	}
+	data = stripBOM(data)
 	decoded, err := codec.Decode(data)
 	if err != nil {
 		return nil, newParseError(name, "", data, err)

@@ -2,7 +2,6 @@ package recon
 
 import (
 	"fmt"
-	"io"
 	"os"
 )
 
@@ -80,9 +79,9 @@ func readStdin() ([]byte, error) {
 	if (info.Mode() & os.ModeCharDevice) != 0 {
 		return nil, nil
 	}
-	b, err := io.ReadAll(os.Stdin)
+	b, err := readAllCapped(os.Stdin)
 	if err != nil {
 		return nil, fmt.Errorf("recon: read stdin: %w", err)
 	}
-	return b, nil
+	return stripBOM(b), nil
 }

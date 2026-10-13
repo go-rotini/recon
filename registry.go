@@ -42,6 +42,16 @@ type registryState struct {
 	// on every event.
 	pendingWarnings []DeprecationWarning
 
+	// bound holds the paths a bind looked up that no source's Keys
+	// reported, so every rebuild resolves them too (an env var such as
+	// APP_MAX_CONNS reaches a max_conns field this way). Replaced, never
+	// mutated, so a snapshot build can read it without a copy.
+	bound map[string]struct{}
+
+	// consulted holds every path a bind has read. Save keeps an
+	// un-prefixed environment source's keys only when a bind read them.
+	consulted map[string]struct{}
+
 	closeOnce sync.Once
 	closed    atomic.Bool
 	logger    *slog.Logger
@@ -373,7 +383,7 @@ func (r *Registry) Validate() error {
 	}
 	if err := validator.Validate(input); err != nil {
 		r.state.mu.Lock()
-		secrets := cloneStringSet(r.state.secretKeys)
+		secrets := r.secretMatcherLocked()
 		r.state.mu.Unlock()
 		redactValidationErrorsForSecrets(err, secrets)
 		return fmt.Errorf("recon: schema validation: %w", err)
@@ -474,23 +484,25 @@ func (r *Registry) applyPrecedenceLocked(order []string) {
 }
 
 // redactValidationErrorsForSecrets walks err and flags any
-// [*ValidationError] whose Path is in secretKeys as Secret. Applied
-// after the validator returns so the [SchemaValidator] interface stays
-// free of recon-specific concerns.
-func redactValidationErrorsForSecrets(err error, secretKeys map[string]struct{}) {
-	if err == nil || len(secretKeys) == 0 {
+// [*ValidationError] whose Path is secret as Secret. It visits every
+// error in the tree, through both Unwrap() error and Unwrap() []error
+// (so errors.Join and multiple %w verbs are covered). Applied after
+// the validator returns so the [SchemaValidator] interface stays free
+// of recon-specific concerns.
+func redactValidationErrorsForSecrets(err error, secrets secretMatcher) {
+	if err == nil || len(secrets.keys) == 0 {
 		return
 	}
-	if multi, ok := errors.AsType[*MultiError](err); ok {
-		for _, sub := range multi.Errors {
-			redactValidationErrorsForSecrets(sub, secretKeys)
-		}
-		return
+	if ve, ok := err.(*ValidationError); ok && secrets.has(ve.Path.String()) { //nolint:errorlint // every node of the tree is visited below
+		ve.Secret = true
 	}
-	if ve, ok := errors.AsType[*ValidationError](err); ok {
-		if _, ok := secretKeys[ve.Path.String()]; ok {
-			ve.Secret = true
+	switch x := err.(type) { //nolint:errorlint // walks the tree by hand
+	case interface{ Unwrap() []error }:
+		for _, sub := range x.Unwrap() {
+			redactValidationErrorsForSecrets(sub, secrets)
 		}
+	case interface{ Unwrap() error }:
+		redactValidationErrorsForSecrets(x.Unwrap(), secrets)
 	}
 }
 
@@ -517,6 +529,7 @@ func (r *Registry) rebuildCandidateLocked() (*Snapshot, error) {
 		defaults:   cloneStringAnyMap(r.state.defaults),
 		aliases:    cloneStringStringMap(r.state.aliases),
 		pins:       cloneStringStringMap(r.state.pins),
+		bound:      r.state.bound,
 		secretKeys: cloneStringSet(r.state.secretKeys),
 		redactor:   r.state.opts.secretRedactor,
 		merge:      r.state.opts.merge,
@@ -529,7 +542,7 @@ func (r *Registry) rebuildCandidateLocked() (*Snapshot, error) {
 	}
 	if r.state.opts.validator != nil {
 		if err := r.state.opts.validator.Validate(candidate.AsMap()); err != nil {
-			redactValidationErrorsForSecrets(err, candidate.secretKeys)
+			redactValidationErrorsForSecrets(err, candidate.secrets())
 			multi.Append(fmt.Errorf("recon: schema validation: %w", err))
 		}
 	}
@@ -545,28 +558,31 @@ func (r *Registry) rebuildCandidateLocked() (*Snapshot, error) {
 }
 
 // checkImmutableLocked returns one [*ImmutableChangedError] per
-// baselined path whose candidate value differs. Caller must hold
-// r.state.mu.
+// baselined path whose candidate value differs or is no longer set
+// (New is "<unset>"). Caller must hold r.state.mu.
 func (r *Registry) checkImmutableLocked(snap *Snapshot) []error {
 	if len(r.state.immutableBaseline) == 0 {
 		return nil
 	}
+	secrets := snap.secrets()
 	var errs []error
 	for path, baseline := range r.state.immutableBaseline {
-		cur, ok := snap.values[path]
-		if !ok {
-			continue
-		}
-		if valuesEqual(baseline, cur) {
+		cur, ok := snap.lookup(path, nil)
+		if ok && valuesEqual(baseline, cur) {
 			continue
 		}
 		old := baseline.String()
-		next := cur.String()
-		if _, secret := r.state.secretKeys[path]; secret {
+		next := unsetText
+		if ok {
+			next = cur.String()
+		}
+		if secrets.has(path) {
 			redactor := r.state.opts.secretRedactor
 			if redactor != nil {
 				old = redactor(old)
-				next = redactor(next)
+				if ok {
+					next = redactor(next)
+				}
 			}
 		}
 		errs = append(errs, &ImmutableChangedError{
@@ -578,15 +594,35 @@ func (r *Registry) checkImmutableLocked(snap *Snapshot) []error {
 	return errs
 }
 
-// queueWarning appends w to the registry's pending warning queue.
+// unsetText is [ImmutableChangedError.New] for a key that is no longer
+// set.
+const unsetText = "<unset>"
+
+// queueWarning appends w to the registry's pending warning queue,
+// unless an equal warning is already queued.
 func (r *Registry) queueWarning(w DeprecationWarning) {
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
+	for _, q := range r.state.pendingWarnings {
+		if q.Source == w.Source && q.Message == w.Message && q.Path.Equal(w.Path) && q.Replacement.Equal(w.Replacement) {
+			return
+		}
+	}
 	r.state.pendingWarnings = append(r.state.pendingWarnings, w)
 }
 
-// DrainWarnings returns and clears the pending warning queue. The
-// watch engine drains the same queue into each reload [Event]; callers
+// secretMatcherLocked returns a matcher over copies of the registry's
+// secret and alias sets. Caller must hold r.state.mu.
+func (r *Registry) secretMatcherLocked() secretMatcher {
+	return secretMatcher{
+		keys:    cloneStringSet(r.state.secretKeys),
+		aliases: cloneStringStringMap(r.state.aliases),
+	}
+}
+
+// DrainWarnings returns and clears the pending warning queue. A warning
+// already queued is not queued again, so binding repeatedly does not
+// grow it. The watch engine drains the same queue into each reload [Event]; callers
 // that run [Registry.Bind] without live reload use this to surface
 // deprecations directly. Returns nil when empty.
 func (r *Registry) DrainWarnings() []DeprecationWarning {

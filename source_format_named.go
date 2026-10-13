@@ -26,7 +26,9 @@ func NewJSONCSource(path string, opts ...FileOption) (Source, error) {
 }
 
 // NewDotenvSource is [NewFileSource] with the [Dotenv] codec pinned.
-// The result holds a flat keyspace.
+// The result holds a flat keyspace; add [WithFileEnvKeys] to read its
+// names as environment variables, so APP_SERVER_PORT answers
+// server.port.
 func NewDotenvSource(path string, opts ...FileOption) (Source, error) {
 	return NewFileSource(path, append([]FileOption{WithFileCodec(Dotenv)}, opts...)...)
 }

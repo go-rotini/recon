@@ -37,8 +37,8 @@ func TestSave_JSONEncode(t *testing.T) {
 	if server["host"] != "localhost" {
 		t.Fatalf("server.host=%v", server["host"])
 	}
-	// JSON widens to float64.
-	if server["port"] != float64(8080) {
+	// JSON integers decode as int64.
+	if server["port"] != int64(8080) {
 		t.Fatalf("server.port=%v", server["port"])
 	}
 }

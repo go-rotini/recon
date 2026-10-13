@@ -75,15 +75,20 @@ type Value struct {
 	kind   ValueKind
 	raw    any
 	source string
+
+	// bigUint marks [StringKind] decimal text made from a uint64 above
+	// math.MaxInt64, so encoding and validation see the number again.
+	bigUint bool
 }
 
 // NewValue wraps a Go value, inferring the [ValueKind] from its dynamic
 // type. Integer types convert to int64, except a uint or uint64 above
 // math.MaxInt64, which becomes its decimal [StringKind] text (it
-// still binds to a uint64 field). float32 widens to float64. []any,
-// []Value, map[string]any and map[string]Value convert recursively to
-// [SliceKind] and [MapKind]. Other types become [StringKind] via
-// fmt.Sprint.
+// still binds to a uint64 field, and [Registry.Save], [Snapshot.AsMap]
+// and a validator see it as the uint64). float32 widens to float64. Slices and
+// arrays (other than []byte) convert element by element to [SliceKind],
+// and maps with string keys to [MapKind]. Other types become
+// [StringKind] via fmt.Sprint.
 func NewValue(v any) Value {
 	switch x := v.(type) {
 	case nil:
@@ -122,7 +127,40 @@ func NewValue(v any) Value {
 	if num, ok := numericValue(v); ok {
 		return num
 	}
+	if coll, ok := collectionValue(v); ok {
+		return coll
+	}
 	return Value{kind: StringKind, raw: fmt.Sprint(v)}
+}
+
+// collectionValue converts any slice or array other than []byte to
+// [SliceKind], and any map with string keys to [MapKind], through
+// reflection.
+func collectionValue(v any) (Value, bool) {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			return Value{}, false
+		}
+		out := make([]Value, rv.Len())
+		for i := range out {
+			out[i] = NewValue(rv.Index(i).Interface())
+		}
+		return Value{kind: SliceKind, raw: out}, true
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			return Value{}, false
+		}
+		out := make(map[string]Value, rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			out[iter.Key().String()] = NewValue(iter.Value().Interface())
+		}
+		return Value{kind: MapKind, raw: out}, true
+	default:
+		return Value{}, false
+	}
 }
 
 // numericValue handles the integer / float arms of [NewValue].
@@ -158,10 +196,11 @@ func numericValue(v any) (Value, bool) {
 }
 
 // uintValue wraps u as [IntKind], or as its decimal [StringKind] text
-// when it exceeds math.MaxInt64, so no value wraps negative.
+// when it exceeds math.MaxInt64, so no value wraps negative. The text
+// still encodes, and reaches a validator, as the uint64.
 func uintValue(u uint64) Value {
 	if u > math.MaxInt64 {
-		return Value{kind: StringKind, raw: strconv.FormatUint(u, 10)}
+		return Value{kind: StringKind, raw: strconv.FormatUint(u, 10), bigUint: true}
 	}
 	return Value{kind: IntKind, raw: int64(u)}
 }
@@ -204,9 +243,17 @@ func (v Value) Any() any {
 // unwrapValueDeep converts v into the plain-Go shape codecs expect:
 // scalars unchanged, [SliceKind] → []any, [MapKind] → map[string]any,
 // recursively. Used by save/encode paths where [Value.Any]'s
-// map[string]Value / []Value would not round-trip.
+// map[string]Value / []Value would not round-trip. The text of a
+// uint64 above math.MaxInt64 becomes the uint64 again.
 func unwrapValueDeep(v Value) any {
 	switch v.Kind() {
+	case StringKind:
+		if v.bigUint {
+			if u, err := strconv.ParseUint(v.String(), 10, 64); err == nil {
+				return u
+			}
+		}
+		return v.Any()
 	case SliceKind:
 		s, ok := v.Any().([]Value)
 		if !ok {
@@ -233,8 +280,10 @@ func unwrapValueDeep(v Value) any {
 }
 
 // String returns the canonical string representation of v. Strings are
-// returned verbatim; other kinds use fmt.Sprint on the raw value. Use
-// [Value.AsString] for the strict accessor.
+// returned verbatim and null is "". A whole-number float below 1e21 is
+// written without an exponent ("1000000", not "1e+06"), and a time in
+// RFC 3339 with nanoseconds; other kinds use fmt.Sprint on the raw
+// value. Use [Value.AsString] for the strict accessor.
 func (v Value) String() string {
 	switch v.kind {
 	case NullKind:
@@ -242,9 +291,28 @@ func (v Value) String() string {
 	case StringKind:
 		s, _ := v.raw.(string)
 		return s
+	case IntKind:
+		i, _ := v.raw.(int64)
+		return strconv.FormatInt(i, 10)
+	case FloatKind:
+		f, _ := v.raw.(float64)
+		return formatFloat(f)
+	case TimeKind:
+		t, _ := v.raw.(time.Time)
+		return t.Format(time.RFC3339Nano)
 	default:
 		return fmt.Sprint(v.raw)
 	}
+}
+
+// formatFloat writes f as fmt.Sprint does, except that a whole number
+// below 1e21 in magnitude is written in full rather than with an
+// exponent.
+func formatFloat(f float64) string {
+	if f == math.Trunc(f) && math.Abs(f) < 1e21 {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
 // AsString returns the string value if v is [StringKind].
@@ -291,7 +359,11 @@ func (v Value) AsBool() (bool, error) {
 }
 
 // AsTime returns the time.Time value if v is [TimeKind]. [StringKind]
-// values are parsed as RFC 3339.
+// values are parsed as RFC 3339, or else as a date-time without an
+// offset ("2006-01-02T15:04:05", "T" or a space, optional fraction), a
+// bare date ("2006-01-02") or a time of day ("15:04:05"), the forms
+// TOML calls local date-time, local date and local time; those are
+// read as UTC.
 func (v Value) AsTime() (time.Time, error) {
 	switch v.kind {
 	case TimeKind:
@@ -299,7 +371,7 @@ func (v Value) AsTime() (time.Time, error) {
 		return t, nil
 	case StringKind:
 		s, _ := v.raw.(string)
-		t, err := time.Parse(time.RFC3339, s)
+		t, err := parseTimeText(s, time.RFC3339)
 		if err != nil {
 			return time.Time{}, fmt.Errorf("%w: parse time %q: %w", ErrCoercion, s, err)
 		}
@@ -307,6 +379,34 @@ func (v Value) AsTime() (time.Time, error) {
 	default:
 		return time.Time{}, typeMismatchErr(v.kind, "time.Time")
 	}
+}
+
+// timeFallbackLayouts are tried, in order, when a time string does not
+// match the primary layout.
+var timeFallbackLayouts = [...]string{
+	time.RFC3339Nano,
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02T15:04",
+	"2006-01-02 15:04",
+	time.DateOnly,
+	"15:04:05.999999999",
+	"15:04",
+}
+
+// parseTimeText parses s with layout, then with each of
+// [timeFallbackLayouts]. The error is layout's.
+func parseTimeText(s, layout string) (time.Time, error) {
+	t, err := time.Parse(layout, s)
+	if err == nil {
+		return t, nil
+	}
+	for _, alt := range timeFallbackLayouts {
+		if t2, e2 := time.Parse(alt, s); e2 == nil {
+			return t2, nil
+		}
+	}
+	return time.Time{}, err //nolint:wrapcheck // callers wrap with the input.
 }
 
 // AsDuration returns the duration value if v is [DurationKind].

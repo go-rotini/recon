@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,8 +16,38 @@ import (
 // (Base64 / Hex, Separator / KVSeparator, time.Time Layout).
 //
 // Struct walking is the bind walker's job; coerce handles leaf types
-// only.
+// only, and struct elements of slices and maps with the default
+// [elemRules].
 func coerce(v Value, dest reflect.Value, tag FieldTag) error {
+	return coerceWith(v, dest, tag, elemRules{})
+}
+
+// elemRules is what binding a struct element of a slice or map takes
+// from the enclosing bind: the primary struct tag and the resolver for
+// `expand` references.
+type elemRules struct {
+	tagName string                       // empty means [TagName]
+	expand  func(string) (string, error) // nil leaves ${refs} as written
+}
+
+// coerceWith is [coerce] with er applied to struct elements.
+func coerceWith(v Value, dest reflect.Value, tag FieldTag, er elemRules) error {
+	// A null value sets the field to its zero value (a nil pointer,
+	// slice or map), unless the type decodes itself through
+	// [Unmarshaler], which sees the null.
+	if v.Kind() == NullKind {
+		if dest.CanAddr() {
+			if u, ok := reflect.TypeAssert[Unmarshaler](dest.Addr()); ok {
+				if err := u.UnmarshalRecon(v); err != nil {
+					return fmt.Errorf("recon: UnmarshalRecon: %w", err)
+				}
+				return nil
+			}
+		}
+		dest.Set(reflect.Zero(dest.Type()))
+		return nil
+	}
+
 	// time.Time is special-cased first: its stdlib UnmarshalText
 	// hardcodes RFC3339Nano and would otherwise mask the tag's
 	// `layout=` option.
@@ -32,7 +63,7 @@ func coerce(v Value, dest reflect.Value, tag FieldTag) error {
 		if dest.IsNil() {
 			dest.Set(reflect.New(dest.Type().Elem()))
 		}
-		return coerce(v, dest.Elem(), tag)
+		return coerceWith(v, dest.Elem(), tag, er)
 	}
 
 	// time.Duration is an int64 alias; route it before the generic
@@ -53,13 +84,15 @@ func coerce(v Value, dest reflect.Value, tag FieldTag) error {
 	case reflect.Float32, reflect.Float64:
 		return coerceFloat(v, dest)
 	case reflect.Slice:
-		return coerceSlice(v, dest, tag)
+		return coerceSlice(v, dest, tag, er)
+	case reflect.Array:
+		return coerceArray(v, dest, tag, er)
 	case reflect.Map:
-		return coerceMap(v, dest, tag)
+		return coerceMap(v, dest, tag, er)
 	case reflect.Struct:
-		return coerceStruct(v, dest, tag)
+		return coerceStruct(v, dest, tag, er)
 	case reflect.Interface:
-		return coerceInterface(v, dest)
+		return coerceInterface(v, dest, er)
 	default:
 		return fmt.Errorf("%w: cannot coerce %s into %s",
 			ErrTypeMismatch, v.Kind(), dest.Type())
@@ -70,7 +103,7 @@ func coerce(v Value, dest reflect.Value, tag FieldTag) error {
 // map[string]any / []any element. MapKind / SliceKind values recurse into
 // nested map[string]any / []any (so a whole subtree binds), and scalars take
 // their natural Go form. A non-empty interface dest is unsupported.
-func coerceInterface(v Value, dest reflect.Value) error {
+func coerceInterface(v Value, dest reflect.Value, er elemRules) error {
 	if dest.NumMethod() != 0 {
 		return fmt.Errorf("%w: cannot coerce %s into %s",
 			ErrTypeMismatch, v.Kind(), dest.Type())
@@ -79,7 +112,7 @@ func coerceInterface(v Value, dest reflect.Value) error {
 	case MapKind:
 		m := map[string]any{}
 		mv := reflect.ValueOf(&m).Elem()
-		if err := coerceMap(v, mv, FieldTag{}); err != nil {
+		if err := coerceMap(v, mv, FieldTag{}, er); err != nil {
 			return err
 		}
 		dest.Set(mv)
@@ -87,7 +120,7 @@ func coerceInterface(v Value, dest reflect.Value) error {
 	case SliceKind:
 		var s []any
 		sv := reflect.ValueOf(&s).Elem()
-		if err := coerceSlice(v, sv, FieldTag{}); err != nil {
+		if err := coerceSlice(v, sv, FieldTag{}, er); err != nil {
 			return err
 		}
 		dest.Set(sv)
@@ -144,13 +177,10 @@ func tryUnmarshalerHooks(v Value, dest reflect.Value) (bool, error) {
 	return false, nil
 }
 
-// valueAsString returns the string projection of v: a [StringKind]
-// value passes through, anything else goes through fmt.Sprint.
+// valueAsString returns the string projection of v, its [Value.String]
+// form.
 func valueAsString(v Value) (string, error) {
-	if v.Kind() == StringKind {
-		return v.AsString()
-	}
-	return fmt.Sprint(v.Any()), nil
+	return v.String(), nil
 }
 
 // mustAsString returns the string carried by a [StringKind] v. The
@@ -163,27 +193,30 @@ func mustAsString(v Value) string {
 	return s
 }
 
-// coerceString fills a string destination. Non-string kinds flatten
-// through fmt.Sprint so a numeric or bool value still populates a
-// string field.
+// coerceString fills a string destination with v's [Value.String]
+// form, so a numeric, bool or time value still populates a string
+// field.
 func coerceString(v Value, dest reflect.Value) error {
-	switch v.Kind() {
-	case StringKind:
-		s, err := v.AsString()
-		if err != nil {
-			return err
-		}
-		dest.SetString(s)
-	default:
-		dest.SetString(fmt.Sprint(v.Any()))
-	}
+	dest.SetString(v.String())
 	return nil
 }
 
-// coerceBool accepts [BoolKind] directly and [StringKind] via
-// strconv.ParseBool.
+// coerceBool accepts [BoolKind] directly, [StringKind] through
+// [parseBool], and the integers 0 and 1, as it accepts "0" and "1".
 func coerceBool(v Value, dest reflect.Value) error {
 	switch v.Kind() {
+	case IntKind:
+		i, err := v.AsInt64()
+		if err != nil {
+			return err
+		}
+		switch i {
+		case 0, 1:
+			dest.SetBool(i == 1)
+			return nil
+		default:
+			return fmt.Errorf("%w: %d is not a bool (want 0 or 1)", ErrCoercion, i)
+		}
 	case BoolKind:
 		b, err := v.AsBool()
 		if err != nil {
@@ -193,7 +226,7 @@ func coerceBool(v Value, dest reflect.Value) error {
 		return nil
 	case StringKind:
 		s := mustAsString(v)
-		b, err := strconv.ParseBool(s)
+		b, err := parseBool(s)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrCoercion, err)
 		}
@@ -263,7 +296,7 @@ func coerceFloat(v Value, dest reflect.Value) error {
 // (element-wise recursion) or a [StringKind] value (split on
 // tag.Separator, default ","). []byte destinations route through
 // [coerceBytes].
-func coerceSlice(v Value, dest reflect.Value, tag FieldTag) error {
+func coerceSlice(v Value, dest reflect.Value, tag FieldTag, er elemRules) error {
 	if dest.Type().Elem().Kind() == reflect.Uint8 {
 		return coerceBytes(v, dest, tag)
 	}
@@ -297,7 +330,7 @@ func coerceSlice(v Value, dest reflect.Value, tag FieldTag) error {
 
 	out := reflect.MakeSlice(dest.Type(), len(elements), len(elements))
 	for i, el := range elements {
-		if err := coerce(el, out.Index(i), FieldTag{Separator: tag.Separator}); err != nil {
+		if err := coerceWith(el, out.Index(i), FieldTag{Separator: tag.Separator}, er); err != nil {
 			return fmt.Errorf("element %d: %w", i, err)
 		}
 	}
@@ -353,10 +386,25 @@ func coerceBytes(v Value, dest reflect.Value, tag FieldTag) error {
 	}
 }
 
+// coerceArray fills an [N]T destination the way [coerceSlice] fills a
+// []T, then requires exactly N elements (N bytes for [N]byte).
+func coerceArray(v Value, dest reflect.Value, tag FieldTag, er elemRules) error {
+	tmp := reflect.New(reflect.SliceOf(dest.Type().Elem())).Elem()
+	if err := coerceSlice(v, tmp, tag, er); err != nil {
+		return err
+	}
+	if tmp.Len() != dest.Len() {
+		return fmt.Errorf("%w: have %d elements, %s needs %d",
+			ErrCoercion, tmp.Len(), dest.Type(), dest.Len())
+	}
+	reflect.Copy(dest, tmp)
+	return nil
+}
+
 // coerceMap fills a map[string]V destination. [MapKind] recurses
 // per-value; [StringKind] is split as "k=v,k=v" using tag.Separator
 // (default ",") and tag.KVSeparator (default "=").
-func coerceMap(v Value, dest reflect.Value, tag FieldTag) error {
+func coerceMap(v Value, dest reflect.Value, tag FieldTag, er elemRules) error {
 	if dest.Type().Key().Kind() != reflect.String {
 		return fmt.Errorf("%w: map key must be string, got %s",
 			ErrTypeMismatch, dest.Type().Key())
@@ -390,7 +438,7 @@ func coerceMap(v Value, dest reflect.Value, tag FieldTag) error {
 	elemType := dest.Type().Elem()
 	for k, el := range entries {
 		ev := reflect.New(elemType).Elem()
-		if err := coerce(el, ev, FieldTag{}); err != nil {
+		if err := coerceWith(el, ev, FieldTag{}, er); err != nil {
 			return fmt.Errorf("entry %q: %w", k, err)
 		}
 		out.SetMapIndex(reflect.ValueOf(k), ev)
@@ -427,12 +475,12 @@ func parseStringMap(s, sep, kv string) map[string]Value {
 // time.Time (routed to [coerceTime]) and MapKind → struct (the
 // `format=` post-decode path). Plain struct fields on a [Registry.Bind]
 // target are recursed into by the walker and never reach here.
-func coerceStruct(v Value, dest reflect.Value, tag FieldTag) error {
+func coerceStruct(v Value, dest reflect.Value, tag FieldTag, er elemRules) error {
 	if isTimeTime(dest.Type()) {
 		return coerceTime(v, dest, tag)
 	}
 	if v.Kind() == MapKind {
-		return coerceStructFromMap(v, dest)
+		return bindStructFromMap(v, dest, er)
 	}
 	return fmt.Errorf("%w: nested struct %s should be walked, not coerced",
 		ErrTypeMismatch, dest.Type())
@@ -468,6 +516,182 @@ func coerceStructFromMap(v Value, dest reflect.Value) error {
 	return nil
 }
 
+// bindStructFromMap populates dest from a [MapKind] value with the
+// naming rules [Registry.Bind] uses for top-level fields: the primary
+// tag (then env / json / yaml / toml), else the snake_case Go name,
+// with a lowercased Go name accepted when the snake_case key is absent.
+// `inline` and unnamed embedded structs read from the same map. The
+// options that apply are the name (a dotted name reads a nested map),
+// `aliases=`, `default=`, `required`, `notEmpty`, `fromFile`, `expand`,
+// `transform=` and the value-format options. It serves struct elements
+// of slices and maps, and `format=`-decoded struct fields.
+func bindStructFromMap(v Value, dest reflect.Value, er elemRules) error {
+	m, err := v.AsMap()
+	if err != nil {
+		return err
+	}
+	return bindStructFields(m, dest, nil, er)
+}
+
+// bindStructFields is [bindStructFromMap] over m. inlined lists the
+// struct types already being filled from m, so a type that embeds a
+// pointer to itself stops instead of recursing forever.
+func bindStructFields(m map[string]Value, dest reflect.Value, inlined []reflect.Type, er elemRules) error {
+	t := dest.Type()
+	inlined = append(inlined, t)
+	for i := range t.NumField() {
+		sf := t.Field(i)
+		if !sf.IsExported() {
+			continue
+		}
+		tag, _ := fieldTag(sf, er.tagName)
+		if tag.Skip {
+			continue
+		}
+		fv := dest.Field(i)
+		if tag.Inline || (sf.Anonymous && tag.Name == "") {
+			if inner, ok := structTarget(fv, inlined); ok {
+				if err := bindStructFields(m, inner, inlined, er); err != nil {
+					return err
+				}
+				continue
+			}
+		}
+		if err := bindElementField(m, fv, sf, tag, er); err != nil {
+			return fmt.Errorf("field %s: %w", sf.Name, err)
+		}
+	}
+	return nil
+}
+
+// bindElementField fills one field of a struct element from m.
+func bindElementField(m map[string]Value, fv reflect.Value, sf reflect.StructField, tag FieldTag, er elemRules) error {
+	sub, found := lookupElementKey(m, sf, tag)
+	if found && sub.Kind() == NullKind && tag.Required {
+		found = false
+	}
+	if !found {
+		switch {
+		case tag.HasDefault:
+			sub = NewValue(tag.DefaultValue)
+		case tag.Required:
+			return ErrKeyNotFound
+		default:
+			return nil
+		}
+	}
+	if tag.FromFile {
+		data, err := readFromFile(sub.String())
+		if err != nil {
+			return fmt.Errorf("recon: fromFile %q: %w", sub.String(), err)
+		}
+		sub = NewValue(string(data))
+	}
+	if tag.Expand && er.expand != nil && sub.Kind() == StringKind {
+		s, err := er.expand(mustAsString(sub))
+		if err != nil {
+			return err
+		}
+		sub = NewValue(s)
+	}
+	if tag.NotEmpty && isEmptyValue(sub) {
+		return ErrEmptyValue
+	}
+	return coerceWith(sub, fv, tag, er)
+}
+
+// fieldTag returns sf's parsed tag from the primary tag (empty means
+// [TagName]), else from the first of env / json / yaml / toml, and
+// whether either was present. A fallback tag's `omitempty` is left out:
+// those tags mean something else by it.
+func fieldTag(sf reflect.StructField, primary string) (FieldTag, bool) {
+	if primary == "" {
+		primary = TagName
+	}
+	if raw, ok := sf.Tag.Lookup(primary); ok && raw != "" {
+		return ParseTag(raw), true
+	}
+	for _, alt := range fallbackTagNames {
+		if alt == primary {
+			continue
+		}
+		if raw, ok := sf.Tag.Lookup(alt); ok && raw != "" {
+			tag := ParseTag(raw)
+			tag.OmitEmpty = false
+			return tag, true
+		}
+	}
+	return FieldTag{}, false
+}
+
+// lookupElementKey finds sf's entry in m: the tag's name (transformed;
+// a dotted name reads nested maps), or without one the snake_case Go
+// name and then the lowercased Go name; then each `aliases=` entry.
+func lookupElementKey(m map[string]Value, sf reflect.StructField, tag FieldTag) (Value, bool) {
+	if tag.Name != "" {
+		if v, ok := lookupElementPath(m, ParsePath(tag.Name), tag.Transform); ok {
+			return v, true
+		}
+	} else {
+		if v, ok := m[applyTransform(toSnakeCase(sf.Name), tag.Transform)]; ok {
+			return v, true
+		}
+		if v, ok := m[strings.ToLower(sf.Name)]; ok {
+			return v, true
+		}
+	}
+	for _, alias := range tag.Aliases {
+		if v, ok := lookupElementPath(m, ParsePath(alias), ""); ok {
+			return v, true
+		}
+	}
+	return Value{}, false
+}
+
+// lookupElementPath reads the entry at p in m, descending through
+// nested maps, with each segment re-spelled by transform.
+func lookupElementPath(m map[string]Value, p Path, transform string) (Value, bool) {
+	var cur Value
+	for i, seg := range p {
+		v, ok := m[applyTransform(seg, transform)]
+		if !ok {
+			return Value{}, false
+		}
+		cur = v
+		if i < len(p)-1 {
+			next, err := v.AsMap()
+			if err != nil {
+				return Value{}, false
+			}
+			m = next
+		}
+	}
+	return cur, len(p) > 0
+}
+
+// structTarget returns the struct fv holds or points to, allocating a
+// nil pointer, or false when fv is not a walkable struct or its type is
+// already in inlined.
+func structTarget(fv reflect.Value, inlined []reflect.Type) (reflect.Value, bool) {
+	if !isWalkableStructValue(fv) {
+		return reflect.Value{}, false
+	}
+	st := fv.Type()
+	if st.Kind() == reflect.Pointer {
+		st = st.Elem()
+	}
+	if slices.Contains(inlined, st) {
+		return reflect.Value{}, false
+	}
+	if fv.Kind() == reflect.Pointer {
+		if fv.IsNil() {
+			fv.Set(reflect.New(fv.Type().Elem()))
+		}
+		return fv.Elem(), true
+	}
+	return fv, true
+}
+
 // fieldKeyFromTag returns the map-key used to look up sf's value
 // during a [coerceStructFromMap] walk. Multi-segment tag names
 // ("server.port") collapse to the first segment since a map-key is
@@ -491,7 +715,7 @@ func fieldKeyFromTag(sf reflect.StructField) string {
 
 // coerceTime fills a time.Time destination. [TimeKind] passes through;
 // [StringKind] parses via tag.Layout (default RFC3339) and falls back
-// to RFC3339Nano, DateTime, and DateOnly.
+// to the forms [Value.AsTime] accepts.
 func coerceTime(v Value, dest reflect.Value, tag FieldTag) error {
 	switch v.Kind() {
 	case TimeKind:
@@ -507,16 +731,10 @@ func coerceTime(v Value, dest reflect.Value, tag FieldTag) error {
 		if layout == "" {
 			layout = time.RFC3339
 		}
-		t, err := time.Parse(layout, s)
+		t, err := parseTimeText(s, layout)
 		if err == nil {
 			dest.Set(reflect.ValueOf(t))
 			return nil
-		}
-		for _, alt := range []string{time.RFC3339Nano, time.DateTime, time.DateOnly} {
-			if t2, e2 := time.Parse(alt, s); e2 == nil {
-				dest.Set(reflect.ValueOf(t2))
-				return nil
-			}
 		}
 		return fmt.Errorf("%w: parse %q as time (layout %q): %w",
 			ErrCoercion, s, layout, err)
@@ -621,4 +839,20 @@ func isDurationType(t reflect.Type) bool {
 
 func isTimeTime(t reflect.Type) bool {
 	return t == reflect.TypeFor[time.Time]()
+}
+
+// parseBool accepts what [strconv.ParseBool] does, and "true", "false",
+// "yes", "no", "on" and "off" in any case.
+func parseBool(s string) (bool, error) {
+	b, err := strconv.ParseBool(s)
+	if err == nil {
+		return b, nil
+	}
+	switch strings.ToLower(s) {
+	case "true", "yes", "on":
+		return true, nil
+	case "false", "no", "off":
+		return false, nil
+	}
+	return false, err
 }

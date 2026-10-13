@@ -2,6 +2,9 @@ package recon
 
 import (
 	"fmt"
+	"maps"
+	"slices"
+	"time"
 
 	"github.com/go-rotini/jsonschema"
 )
@@ -73,8 +76,10 @@ func NewJSONSchemaValidatorFromSchema(s *jsonschema.Schema) *JSONSchemaValidator
 // Validate runs snapshot through the compiled schema. On failure,
 // each constraint violation is translated into a [*ValidationError]
 // and aggregated under a [*MultiError]; nested causes of compound
-// keywords (anyOf, oneOf, $ref) are not included. A nil snapshot is
-// treated as the empty object.
+// keywords (anyOf, oneOf, $ref) are reachable through each error's
+// Cause, the [*jsonschema.ValidationError]. A nil snapshot is treated
+// as the empty object. A time.Time is checked as its RFC 3339 text,
+// the form JSON gives it.
 func (v *JSONSchemaValidator) Validate(snapshot map[string]any) error {
 	if v == nil || v.schema == nil {
 		return nil
@@ -82,6 +87,9 @@ func (v *JSONSchemaValidator) Validate(snapshot map[string]any) error {
 	input := snapshot
 	if input == nil {
 		input = map[string]any{}
+	}
+	if conv, changed := jsonTimes(input); changed {
+		input, _ = conv.(map[string]any)
 	}
 	result, err := v.schema.ValidateValue(input)
 	if err != nil {
@@ -98,14 +106,14 @@ func (v *JSONSchemaValidator) Validate(snapshot map[string]any) error {
 }
 
 // translateSchemaError converts a jsonschema.ValidationError into a
-// recon [*ValidationError]. Compound applicators (anyOf, $ref, oneOf)
-// carry nested causes on .Causes; only the top-level assertion is
-// surfaced today.
+// recon [*ValidationError] whose Cause is e, so compound applicators'
+// nested failures (anyOf, $ref, oneOf) stay reachable.
 func translateSchemaError(e *jsonschema.ValidationError) *ValidationError {
 	return &ValidationError{
-		Path: jsonPointerToPath(e.InstanceLocation),
-		Rule: e.Keyword,
-		Msg:  e.Message,
+		Path:  jsonPointerToPath(e.InstanceLocation),
+		Rule:  e.Keyword,
+		Msg:   e.Message,
+		Cause: e,
 	}
 }
 
@@ -170,4 +178,45 @@ func unescapeJSONPointer(s string) string {
 		out = append(out, s[i])
 	}
 	return string(out)
+}
+
+// jsonTimes returns v with every time.Time replaced by its RFC 3339
+// text, as a JSON round trip writes it, so a TOML date-time validates
+// as a string the way the same value from YAML or JSON does. Maps and
+// slices holding one are copied; changed is false when v holds none.
+func jsonTimes(v any) (out any, changed bool) {
+	switch x := v.(type) {
+	case time.Time:
+		return x.Format(time.RFC3339Nano), true
+	case map[string]any:
+		var cp map[string]any
+		for k, e := range x {
+			if ce, ok := jsonTimes(e); ok {
+				if cp == nil {
+					cp = maps.Clone(x)
+				}
+				cp[k] = ce
+			}
+		}
+		if cp == nil {
+			return x, false
+		}
+		return cp, true
+	case []any:
+		var cp []any
+		for i, e := range x {
+			if ce, ok := jsonTimes(e); ok {
+				if cp == nil {
+					cp = slices.Clone(x)
+				}
+				cp[i] = ce
+			}
+		}
+		if cp == nil {
+			return x, false
+		}
+		return cp, true
+	default:
+		return v, false
+	}
 }

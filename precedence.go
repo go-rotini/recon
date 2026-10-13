@@ -13,11 +13,13 @@ package recon
 // [MergeAppend] slice and map contributions across the chain (plus
 // default) are concatenated / deep-merged; type-mismatched pairs
 // fall back to "higher precedence wins".
-func resolveKey(p Path, is snapshotInputs) (val Value, srcs []string, found bool) {
-	pathStr := p.String()
-
+//
+// Within each layer the canonical key is tried first, then each alias
+// that resolves to it, so a source still holding a value under an old
+// (aliased) name supplies it.
+func resolveKey(p Path, pathStr string, is snapshotInputs) (val Value, srcs []string, found bool) {
 	// 1. Explicit override wins unconditionally; never merged.
-	if raw, ok := is.explicits[pathStr]; ok {
+	if raw, ok := layerGet(is.explicits, pathStr, is); ok {
 		v := NewValue(raw).withSource(srcExplicit)
 		return v, []string{srcExplicit}, true
 	}
@@ -28,8 +30,8 @@ func resolveKey(p Path, is snapshotInputs) (val Value, srcs []string, found bool
 			if s.Name() != pinName {
 				continue
 			}
-			rawVal, ok, err := s.Get(p)
-			if err != nil || !ok {
+			rawVal, ok := sourceGet(s, p, pathStr, is)
+			if !ok {
 				return Value{}, nil, false
 			}
 			rawVal = rawVal.withSource(s.Name())
@@ -46,6 +48,34 @@ func resolveKey(p Path, is snapshotInputs) (val Value, srcs []string, found bool
 	return resolveShadow(p, pathStr, is)
 }
 
+// layerGet looks pathStr up in an explicit or default layer, falling
+// back to the aliases that resolve to it.
+func layerGet(layer map[string]any, pathStr string, is snapshotInputs) (any, bool) {
+	if raw, ok := layer[pathStr]; ok {
+		return raw, true
+	}
+	for _, alias := range is.aliasesOf[pathStr] {
+		if raw, ok := layer[alias.String()]; ok {
+			return raw, true
+		}
+	}
+	return nil, false
+}
+
+// sourceGet asks s for p, then for each alias that resolves to p. A
+// source error counts as not present.
+func sourceGet(s Source, p Path, pathStr string, is snapshotInputs) (Value, bool) {
+	if v, ok, err := s.Get(p); err == nil && ok {
+		return v, true
+	}
+	for _, alias := range is.aliasesOf[pathStr] {
+		if v, ok, err := s.Get(alias); err == nil && ok {
+			return v, true
+		}
+	}
+	return Value{}, false
+}
+
 // resolveShadow is the default first-set-wins walk. Returns the
 // winner plus the full provenance list in precedence-descending
 // order.
@@ -54,8 +84,8 @@ func resolveShadow(p Path, pathStr string, is snapshotInputs) (Value, []string, 
 	var winnerName string
 	var srcs []string
 	for _, s := range is.sources {
-		rawVal, ok, err := s.Get(p)
-		if err != nil || !ok {
+		rawVal, ok := sourceGet(s, p, pathStr, is)
+		if !ok {
 			continue
 		}
 		if winnerName == "" {
@@ -67,7 +97,7 @@ func resolveShadow(p Path, pathStr string, is snapshotInputs) (Value, []string, 
 	if winnerName != "" {
 		return winner, srcs, true
 	}
-	if raw, ok := is.defaults[pathStr]; ok {
+	if raw, ok := layerGet(is.defaults, pathStr, is); ok {
 		v := NewValue(raw).withSource(srcDefault)
 		return v, []string{srcDefault}, true
 	}
@@ -86,13 +116,13 @@ func resolveAppend(p Path, pathStr string, is snapshotInputs) (Value, []string, 
 	// Collect in precedence-descending order; fold from the tail.
 	var descending []contribution
 	for _, s := range is.sources {
-		rawVal, ok, err := s.Get(p)
-		if err != nil || !ok {
+		rawVal, ok := sourceGet(s, p, pathStr, is)
+		if !ok {
 			continue
 		}
 		descending = append(descending, contribution{val: rawVal, source: s.Name()})
 	}
-	if raw, ok := is.defaults[pathStr]; ok {
+	if raw, ok := layerGet(is.defaults, pathStr, is); ok {
 		descending = append(descending, contribution{
 			val: NewValue(raw), source: srcDefault,
 		})

@@ -1,6 +1,9 @@
 package recon
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // DefaultDelimiter is the path-segment delimiter [ParsePath] consumes
 // and [Path.String] emits.
@@ -25,9 +28,11 @@ func MakePath(segments ...string) Path {
 	return p
 }
 
-// ParsePath parses s using [DefaultDelimiter]. Segments containing the
-// delimiter are bracket-escaped on input: ParsePath("[my.key].sub")
-// returns Path{"my.key", "sub"}. An empty string returns an empty Path.
+// ParsePath parses s using [DefaultDelimiter]. A segment containing
+// the delimiter or "[" is bracket-escaped: ParsePath("[my.key].sub")
+// returns Path{"my.key", "sub"}. Inside brackets "]]" stands for a
+// literal "]". An empty string returns an empty Path; "[]" is a Path
+// holding one empty segment.
 //
 // ParsePath never errors. An unclosed bracket is treated as a literal
 // "[" at that position; two consecutive delimiters produce an empty
@@ -35,6 +40,9 @@ func MakePath(segments ...string) Path {
 func ParsePath(s string) Path {
 	if s == "" {
 		return Path{}
+	}
+	if strings.IndexByte(s, '[') < 0 {
+		return Path(strings.Split(s, DefaultDelimiter))
 	}
 	var (
 		out Path
@@ -44,14 +52,14 @@ func ParsePath(s string) Path {
 	for i < len(s) {
 		switch c := s[i]; c {
 		case '[':
-			j := strings.IndexByte(s[i+1:], ']')
-			if j < 0 {
+			end := closingBracket(s, i+1)
+			if end < 0 {
 				buf.WriteByte(c)
 				i++
 				continue
 			}
-			buf.WriteString(s[i+1 : i+1+j])
-			i += j + 2
+			buf.WriteString(strings.ReplaceAll(s[i+1:end], "]]", "]"))
+			i = end + 1
 		case DefaultDelimiter[0]:
 			out = append(out, buf.String())
 			buf.Reset()
@@ -65,26 +73,97 @@ func ParsePath(s string) Path {
 	return out
 }
 
-// String returns the canonical delimited form of p. Segments
-// containing the delimiter are bracket-escaped.
+// closingBracket returns the index of the "]" closing a bracketed
+// segment whose content starts at from, skipping "]]" escapes, or -1.
+func closingBracket(s string, from int) int {
+	for j := from; j < len(s); j++ {
+		if s[j] != ']' {
+			continue
+		}
+		if j+1 < len(s) && s[j+1] == ']' {
+			j++
+			continue
+		}
+		return j
+	}
+	return -1
+}
+
+// needsBrackets reports whether seg must be bracket-escaped to survive
+// [ParsePath].
+func needsBrackets(seg string) bool {
+	return strings.Contains(seg, DefaultDelimiter) || strings.IndexByte(seg, '[') >= 0
+}
+
+// String returns the canonical delimited form of p, which [ParsePath]
+// turns back into p. Segments containing the delimiter or "[" are
+// bracket-escaped, with "]" inside brackets doubled.
 func (p Path) String() string {
-	if len(p) == 0 {
+	switch {
+	case len(p) == 0:
 		return ""
+	case len(p) == 1 && p[0] == "":
+		return "[]"
+	case len(p) == 1 && !needsBrackets(p[0]):
+		return p[0]
+	}
+	n := len(p) - 1
+	for _, seg := range p {
+		n += len(seg) + 2
 	}
 	var b strings.Builder
+	b.Grow(n)
 	for i, seg := range p {
 		if i > 0 {
 			b.WriteString(DefaultDelimiter)
 		}
-		if strings.Contains(seg, DefaultDelimiter) {
+		if needsBrackets(seg) {
 			b.WriteByte('[')
-			b.WriteString(seg)
+			b.WriteString(strings.ReplaceAll(seg, "]", "]]"))
 			b.WriteByte(']')
 		} else {
 			b.WriteString(seg)
 		}
 	}
 	return b.String()
+}
+
+// sortPaths sorts ps by canonical string form, rendering each path
+// once rather than on every comparison.
+func sortPaths(ps []Path) {
+	if len(ps) < 2 {
+		return
+	}
+	type keyed struct {
+		path Path
+		key  string
+	}
+	ks := make([]keyed, len(ps))
+	for i, p := range ps {
+		ks[i] = keyed{path: p, key: p.String()}
+	}
+	slices.SortFunc(ks, func(a, b keyed) int { return strings.Compare(a.key, b.key) })
+	for i, k := range ks {
+		ps[i] = k.path
+	}
+}
+
+// topLevelDelims calls fn with the index of each delimiter in the
+// canonical path string s that separates two segments (one outside
+// brackets), in order. fn returning false stops the walk.
+func topLevelDelims(s string, fn func(i int) bool) {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '[':
+			if end := closingBracket(s, i+1); end >= 0 {
+				i = end
+			}
+		case DefaultDelimiter[0]:
+			if !fn(i) {
+				return
+			}
+		}
+	}
 }
 
 // Equal reports whether p and other have identical segments.

@@ -2,7 +2,6 @@ package recon
 
 import (
 	"os"
-	"slices"
 	"strings"
 )
 
@@ -70,16 +69,7 @@ func (s *envFamilySource) Keys() []Path {
 			out = append(out, fam.Target.Clone())
 		}
 	}
-	slices.SortFunc(out, func(a, b Path) int {
-		switch {
-		case a.String() < b.String():
-			return -1
-		case a.String() > b.String():
-			return 1
-		default:
-			return 0
-		}
-	})
+	sortPaths(out)
 	return out
 }
 

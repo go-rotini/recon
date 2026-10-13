@@ -89,10 +89,11 @@ func (l *Live[T]) Get() *T {
 }
 
 // Events returns the channel of every reload [Event] Live observed,
-// with Err set when the rebind failed and Time set to when Live
-// handled it. It has a one-slot buffer; events that arrive while it is
-// full are dropped and counted in a warning on the next delivered
-// event (see [Live]). Closed by [Live.Close] or when the parent's
+// with Err set when the rebind failed, Warnings including the
+// deprecations the rebind raised, and Time set to when Live handled
+// it. It has a one-slot buffer; events that arrive while it is full are
+// dropped and counted in a warning on the next delivered event (see
+// [Live]). Closed by [Live.Close] or when the parent's
 // Events channel closes.
 func (l *Live[T]) Events() <-chan Event { return l.events }
 
@@ -143,6 +144,8 @@ func (l *Live[T]) handle(evt Event) {
 			l.curr.Store(next)
 			l.recordErr(nil)
 		}
+		// Deprecations the rebind just queued belong to this event.
+		out.Warnings = appendNewWarnings(slices.Clip(out.Warnings), l.reg.DrainWarnings())
 	} else {
 		l.recordErr(evt.Err)
 	}
@@ -215,4 +218,18 @@ func (r *Registry) checkWatched() error {
 		}
 	}
 	return nil
+}
+
+// appendNewWarnings appends each warning in add that dst does not
+// already hold.
+func appendNewWarnings(dst, add []DeprecationWarning) []DeprecationWarning {
+	for _, w := range add {
+		if !slices.ContainsFunc(dst, func(d DeprecationWarning) bool {
+			return d.Source == w.Source && d.Message == w.Message &&
+				d.Path.Equal(w.Path) && d.Replacement.Equal(w.Replacement)
+		}) {
+			dst = append(dst, w)
+		}
+	}
+	return dst
 }

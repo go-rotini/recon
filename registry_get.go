@@ -2,12 +2,19 @@ package recon
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
 // Get returns the [Value] resolved for key. The bool reports whether
 // any layer of the registry supplied a value; an empty string counts
-// as set. The error is non-nil only when the registry is closed.
+// as set. For a key that only has keys below it, such as a map section
+// of a configuration file, Get returns a [MapKind] value built from
+// them (see [Snapshot.Get]). The error is non-nil only when the
+// registry is closed.
+//
+// The typed getters (GetString, GetInt and so on, and [Get]) return
+// the type's zero value, true and no error for a key set to null.
 func (r *Registry) Get(key string) (Value, bool, error) {
 	if err := r.validateNotClosed(); err != nil {
 		return Value{}, false, err
@@ -16,7 +23,7 @@ func (r *Registry) Get(key string) (Value, bool, error) {
 	if snap == nil {
 		return Value{}, false, nil
 	}
-	v, ok := snap.Get(ParsePath(r.fullKey(key)))
+	v, ok := r.lookupKey(snap, key)
 	return v, ok, nil
 }
 
@@ -39,6 +46,9 @@ func (r *Registry) GetString(key string) (string, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
 		return "", ok, err
+	}
+	if v.Kind() == NullKind {
+		return "", true, nil
 	}
 	s, asErr := v.AsString()
 	if asErr != nil {
@@ -63,6 +73,9 @@ func (r *Registry) GetInt64(key string) (int64, bool, error) {
 	if err != nil || !ok {
 		return 0, ok, err
 	}
+	if v.Kind() == NullKind {
+		return 0, true, nil
+	}
 	i, asErr := v.AsInt64()
 	if asErr != nil {
 		return 0, true, asErr
@@ -77,6 +90,9 @@ func (r *Registry) GetFloat(key string) (float64, bool, error) {
 	if err != nil || !ok {
 		return 0, ok, err
 	}
+	if v.Kind() == NullKind {
+		return 0, true, nil
+	}
 	f, asErr := v.AsFloat64()
 	if asErr != nil {
 		return 0, true, asErr
@@ -90,6 +106,9 @@ func (r *Registry) GetBool(key string) (bool, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
 		return false, ok, err
+	}
+	if v.Kind() == NullKind {
+		return false, true, nil
 	}
 	b, asErr := v.AsBool()
 	if asErr != nil {
@@ -106,6 +125,9 @@ func (r *Registry) GetDuration(key string) (time.Duration, bool, error) {
 	if err != nil || !ok {
 		return 0, ok, err
 	}
+	if v.Kind() == NullKind {
+		return 0, true, nil
+	}
 	d, asErr := v.AsDuration()
 	if asErr != nil {
 		return 0, true, asErr
@@ -120,6 +142,9 @@ func (r *Registry) GetTime(key string) (time.Time, bool, error) {
 	if err != nil || !ok {
 		return time.Time{}, ok, err
 	}
+	if v.Kind() == NullKind {
+		return time.Time{}, true, nil
+	}
 	t, asErr := v.AsTime()
 	if asErr != nil {
 		return time.Time{}, true, asErr
@@ -133,6 +158,9 @@ func (r *Registry) GetStringSlice(key string) ([]string, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
 		return nil, ok, err
+	}
+	if v.Kind() == NullKind {
+		return nil, true, nil
 	}
 	slice, asErr := v.AsSlice()
 	if asErr != nil {
@@ -155,6 +183,9 @@ func (r *Registry) GetStringMap(key string) (map[string]string, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
 		return nil, ok, err
+	}
+	if v.Kind() == NullKind {
+		return nil, true, nil
 	}
 	m, asErr := v.AsMap()
 	if asErr != nil {
@@ -181,7 +212,8 @@ func (r *Registry) GetAny(key string) (any, bool, error) {
 	return v.Any(), true, nil
 }
 
-// IsSet reports whether any layer of the registry has a value for key.
+// IsSet reports whether any layer of the registry has a value for key,
+// or for a key below it (a configuration file section counts as set).
 // An empty string still counts as set.
 func (r *Registry) IsSet(key string) bool {
 	if r.validateNotClosed() != nil {
@@ -191,7 +223,7 @@ func (r *Registry) IsSet(key string) bool {
 	if snap == nil {
 		return false
 	}
-	_, ok := snap.Get(ParsePath(r.fullKey(key)))
+	_, ok := r.lookupKey(snap, key)
 	return ok
 }
 
@@ -236,6 +268,9 @@ func Get[T any](r *Registry, key string) (T, bool, error) {
 	v, ok, err := r.Get(key)
 	if err != nil || !ok {
 		return zero, ok, err
+	}
+	if v.Kind() == NullKind {
+		return zero, true, nil
 	}
 	out, cErr := coerceValueTo[T](v)
 	if cErr != nil {
@@ -320,4 +355,14 @@ func coerceValueAny[T any](v Value, zero *T) (any, error) {
 		return out, nil
 	}
 	return nil, fmt.Errorf("%w: %T not handled by Get[T]", ErrTypeMismatch, *zero)
+}
+
+// lookupKey resolves key in snap. On a root registry a key without "["
+// is already in canonical form and is looked up as given.
+func (r *Registry) lookupKey(snap *Snapshot, key string) (Value, bool) {
+	if len(r.prefix) == 0 && strings.IndexByte(key, '[') < 0 {
+		return snap.lookup(key, nil)
+	}
+	p := r.fullPath(ParsePath(key))
+	return snap.lookup(p.String(), p)
 }

@@ -17,10 +17,10 @@ This package is used as the default configuration and data-in package for [rotin
 - Atomic, lock-free reads on reload via `Live[T]` and `sync/atomic.Pointer` — readers always observe a complete, validated snapshot
 - Per-key change detection across reloads (`Event.Changed` covers added / removed / modified cases); `Event.Warnings` carries non-fatal `DeprecationWarning` values out of band
 - Per-source provenance via `Describe` / `DescribeKey` / `KeyDescription` — every key knows which source supplied it and which other sources had a value for the same key
-- Struct-tag system: `required`, `notEmpty`, `default=`, `secret`, `immutable`, `inline`, `base64`, `hex`, `layout=`, `separator=`, `kvSeparator=`, plus recon-specific `path=`, `source=`, `aliases=`, `transform=`
-- `immutable`-tagged fields are baselined at first `Bind`; subsequent reload candidates that change a baselined value are rejected (the old / new pair is redacted via `WithSecretRedactor` when the field is also `secret`)
+- Struct-tag system: `required`, `notEmpty`, `default=`, `secret`, `immutable`, `inline`, `omitempty`, `base64`, `hex`, `layout=`, `separator=`, `kvSeparator=`, plus recon-specific `path=`, `source=`, `aliases=`, `transform=`
+- `immutable`-tagged fields are baselined at first `Bind`; subsequent reload candidates that change or remove a baselined value are rejected (the old / new pair is redacted via `WithSecretRedactor` when the field is also `secret`)
 - Schema validation via [go-rotini/jsonschema](https://github.com/go-rotini/jsonschema); supply raw bytes via `WithSchema(rawJSON)` for the one-line case or `WithValidator(...)` for a pre-built `SchemaValidator` — including a custom one behind the same interface
-- Secret redaction: `Secret[T]` is a type alias of [`env.Secret[T]`](https://github.com/go-rotini/env) for free interop; the `secret` struct tag and `MarkSecret(key)` both feed `Describe` and `Save` redaction; customizable redactor via `WithSecretRedactor`
+- Secret redaction: `Secret[T]` is a type alias of [`env.Secret[T]`](https://github.com/go-rotini/env) for free interop; a `Secret[T]` field, the `secret` struct tag and `MarkSecret(key)` all feed `Describe`, `Save` and error redaction (a marked key covers the keys below it and its aliases); customizable redactor via `WithSecretRedactor`
 - Format-agnostic encode: `Save` / `SaveTo` write the current resolved view back to any registered codec; `GenerateTemplate` emits a stub configuration document populated from defaults — the "myapp config init" path
 - Path expansion (POSIX shell-style: `~`, `$VAR`, `${VAR}`); first-match-wins multi-path lookup via `WithSearchPaths`; `WithOptional` for missing-file tolerance
 - Built-in support for `time.Duration`, `time.Time`, `[]byte` (raw / base64 / hex), arrays and maps
@@ -58,7 +58,7 @@ type Config struct {
 }
 
 func main() {
-	envSrc := recon.NewOSEnvSource()
+	envSrc := recon.NewOSEnvSource(recon.WithEnvPrefix("APP_")) // APP_SERVER_PORT → server.port
 	fileSrc, err := recon.NewYAMLSource("config.yaml", recon.WithOptional(true))
 	if err != nil {
 		log.Fatal(err)
@@ -87,7 +87,7 @@ Source chains are explicit and ordered. The first source to return ok=true for a
 
 ```go
 envSrc := recon.NewOSEnvSource(recon.WithEnvPrefix("APP_"))
-localSrc, _ := recon.NewDotenvSource(".env.local", recon.WithOptional(true))
+localSrc, _ := recon.NewDotenvSource(".env.local", recon.WithOptional(true), recon.WithFileEnvKeys("APP_"))
 fileSrc, _ := recon.NewYAMLSource("config.yaml")
 
 r, err := recon.New(
@@ -97,7 +97,9 @@ r, err := recon.New(
 )
 ```
 
-Per-key overrides are first-class: `RegisterAlias` makes one path resolve to another (cycle-checked), and `PinSource(key, sourceName)` forces a key to resolve only from a named source.
+`WithFileEnvKeys("APP_")` reads the `.env` file's names the way the environment source reads variables, so `APP_SERVER_PORT=9090` there overrides `server.port` from `config.yaml`.
+
+Per-key overrides are first-class: `RegisterAlias` makes one path resolve to another (cycle-checked; a source that still holds the old name supplies the value too), and `PinSource(key, sourceName)` forces a key to resolve only from a named source.
 
 ### Choosing codecs
 
@@ -248,7 +250,7 @@ for _, k := range r.Describe().Keys {
 
 ## Encoding back out (`Save` / `SaveTo` / `GenerateTemplate`)
 
-`Save` writes the current resolved view to an `io.Writer`; `SaveTo` writes to a file path and atomic-renames into place. Default policy is safe-to-pipe-anywhere — secret-marked keys are redacted, default-only keys are omitted; opt back in with `WithSaveIncludeSecrets` / `WithSaveIncludeDefaults`:
+`Save` writes the current resolved view to an `io.Writer`; `SaveTo` writes to a file path and atomic-renames into place, writing through a symlink and keeping an existing file's permissions. Default policy is safe-to-pipe-anywhere — secret-marked keys are redacted, default-only keys are omitted, and an environment source without a prefix contributes only the keys a `Bind` read; opt back in with `WithSaveIncludeSecrets` / `WithSaveIncludeDefaults`:
 
 ```go
 // Dump current config to disk.

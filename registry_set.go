@@ -1,9 +1,19 @@
 package recon
 
-import "fmt"
+import (
+	"fmt"
+	"maps"
+)
 
 // Set installs an explicit override for key. Explicit overrides sit
 // above every source in the precedence chain.
+//
+// A non-empty map value is merged leaf by leaf: Set("labels",
+// map[string]any{"z": 3}) adds labels.z and leaves a source's labels.x
+// in place. An empty map is a single value at key instead, so reading
+// key (Get, or a map or struct field bound at it) gives the empty map,
+// and [Snapshot.AsMap] and [Registry.Save] show it in place of lower
+// layers' keys below key. Those keys stay readable on their own.
 //
 // On a sub view, key is interpreted relative to the sub's prefix. Pass
 // nil to clear an override (equivalent to [Registry.Unset]). The snapshot is
@@ -32,8 +42,8 @@ func (r *Registry) Set(key string, value any) error {
 
 // SetDefault installs a fallback value for key. Defaults sit below
 // every source — they apply only when no source (and no explicit
-// override) supplies the key. Same transactional semantics as [Registry.Set];
-// nil clears the default.
+// override) supplies the key. Same transactional semantics and map
+// handling as [Registry.Set]; nil clears the default.
 func (r *Registry) SetDefault(key string, value any) error {
 	if err := r.validateNotClosed(); err != nil {
 		return err
@@ -49,6 +59,50 @@ func (r *Registry) SetDefault(key string, value any) error {
 	}
 	if err := r.rebuildSnapshotLocked(); err != nil {
 		restoreStringAnyEntry(r.state.defaults, fk, prev, hadPrev)
+		return err
+	}
+	return nil
+}
+
+// SetValues is [Registry.Set] for every key in values, with a single
+// snapshot rebuild; setting many keys one Set at a time rebuilds the
+// snapshot after each. A nil value clears that key's override. If the
+// rebuild fails, no override changes and the error is returned.
+func (r *Registry) SetValues(values map[string]any) error {
+	return r.setLayer(values, func(s *registryState) map[string]any { return s.explicits })
+}
+
+// SetDefaults is [Registry.SetDefault] for every key in values, with a
+// single snapshot rebuild. A nil value clears that key's default. If
+// the rebuild fails, no default changes and the error is returned.
+func (r *Registry) SetDefaults(values map[string]any) error {
+	return r.setLayer(values, func(s *registryState) map[string]any { return s.defaults })
+}
+
+// setLayer writes values into the explicit or default layer and
+// rebuilds once, restoring the layer on failure.
+func (r *Registry) setLayer(values map[string]any, layer func(*registryState) map[string]any) error {
+	if err := r.validateNotClosed(); err != nil {
+		return err
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	r.state.mu.Lock()
+	defer r.state.mu.Unlock()
+	m := layer(r.state)
+	prev := cloneStringAnyMap(m)
+	for key, value := range values {
+		fk := r.fullKey(key)
+		if value == nil {
+			delete(m, fk)
+		} else {
+			m[fk] = value
+		}
+	}
+	if err := r.rebuildSnapshotLocked(); err != nil {
+		clear(m)
+		maps.Copy(m, prev)
 		return err
 	}
 	return nil

@@ -79,14 +79,22 @@ func PerSourceFor[T any](r *Registry, key string) (PerSource[T], error) {
 
 	r.state.mu.Lock()
 	sources := append([]Source(nil), r.state.sources...)
-	explicitRaw, hasExplicit := r.state.explicits[canon]
-	defaultRaw, hasDefault := r.state.defaults[canon]
+	is := snapshotInputs{
+		explicits: flattenLayer(maps.Clone(r.state.explicits)),
+		defaults:  flattenLayer(maps.Clone(r.state.defaults)),
+		aliasesOf: invertAliases(r.state.aliases),
+	}
 	r.state.mu.Unlock()
+	explicitRaw, hasExplicit := layerGet(is.explicits, canon, is)
+	defaultRaw, hasDefault := layerGet(is.defaults, canon, is)
 
 	out.Sources = make([]ValueSource[T], 0, len(sources))
 	for _, src := range sources {
 		entry := ValueSource[T]{Source: src.Name()}
 		raw, ok, err := src.Get(path)
+		if err == nil && !ok {
+			raw, ok = sourceGet(src, path, canon, is)
+		}
 		if err != nil {
 			entry.IsSet = true
 			entry.Err = err

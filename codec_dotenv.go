@@ -19,12 +19,17 @@ var Dotenv Codec = dotenvCodec{}
 func (dotenvCodec) Name() string         { return FormatDotenv }
 func (dotenvCodec) Extensions() []string { return []string{".env"} }
 
-// Decode parses data as a `.env` document. Values are strings.
+// Decode parses data as a `.env` document. Values are strings. It
+// accepts input up to [MaxFileSize], the cap recon puts on every file.
+// Input that is not valid UTF-8 is an error.
 func (dotenvCodec) Decode(data []byte) (map[string]any, error) {
 	if len(data) == 0 {
 		return map[string]any{}, nil
 	}
-	f, err := dotenv.Parse(data)
+	if err := checkUTF8(FormatDotenv, data); err != nil {
+		return nil, err
+	}
+	f, err := dotenv.Parse(data, dotenv.WithMaxFileSize(MaxFileSize))
 	if err != nil {
 		return nil, dotenvDecodeError(err)
 	}
@@ -58,6 +63,9 @@ func (dotenvCodec) Encode(v map[string]any) ([]byte, error) {
 func dotenvDecodeError(err error) error {
 	if e, ok := errors.AsType[*dotenv.ParseError](err); ok {
 		return &codecError{format: FormatDotenv, err: err, line: e.Pos.Line, col: e.Pos.Column, msg: e.Message}
+	}
+	if e, ok := errors.AsType[*dotenv.ExpansionError](err); ok && e.Pos.Line > 0 {
+		return atPosition(FormatDotenv, err, e.Pos.Line, e.Pos.Column)
 	}
 	return fmt.Errorf("recon: dotenv decode: %w", err)
 }

@@ -3,6 +3,7 @@ package recon
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -87,17 +88,23 @@ var (
 )
 
 // Position is a source-local position used by [ParseError]. Line and
-// Column are 1-indexed; both zero means unknown.
+// Column are 1-indexed; both zero means unknown. Column is taken from
+// the codec's error: it counts bytes for YAML, JSON, JSONC and dotenv,
+// and characters for TOML; an error that knows only its line has
+// Column 0.
 type Position struct {
 	Line   int
 	Column int
 }
 
-// String formats the position as "line:col", or returns "" for the
-// zero value.
+// String formats the position as "line:col", as "line" when the column
+// is unknown, or returns "" for the zero value.
 func (p Position) String() string {
 	if p.Line == 0 && p.Column == 0 {
 		return ""
+	}
+	if p.Column == 0 {
+		return strconv.Itoa(p.Line)
 	}
 	return fmt.Sprintf("%d:%d", p.Line, p.Column)
 }
@@ -314,6 +321,19 @@ type ValidationError struct {
 	Rule   string
 	Msg    string
 	Secret bool
+	// Cause is the validator's own error, when it has one: a
+	// *jsonschema.ValidationError from [JSONSchemaValidator], with its
+	// nested causes and keyword locations. Unwrap returns it, except
+	// when Secret is true, since it may quote the value.
+	Cause error
+}
+
+// Unwrap returns Cause, or nil when Secret is true.
+func (e *ValidationError) Unwrap() error {
+	if e.Secret {
+		return nil
+	}
+	return e.Cause
 }
 
 // Error describes the failed rule.

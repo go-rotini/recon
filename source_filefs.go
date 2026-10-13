@@ -69,7 +69,7 @@ func newFileSourceFS(codecs *Codecs, parseErr parseErrorFunc, name string, fsys 
 	}
 
 	return &FileSourceFS{
-		MapSource: NewMapSource(name, decoded),
+		MapSource: newFileMapSource(name, decoded, cfg),
 		codec:     codec,
 		path:      path,
 		optional:  cfg.optional,
@@ -93,7 +93,7 @@ func (s *FileSourceFS) Format() string {
 // "/etc/myapp/config.yaml" with both source kinds.
 func readFSMaybeOptional(fsys fs.FS, path string, optional bool) (data []byte, missing bool, err error) {
 	clean := strings.TrimPrefix(filepath.ToSlash(path), "/")
-	b, err := fs.ReadFile(fsys, clean)
+	b, err := readFSFileCapped(fsys, clean)
 	if err != nil {
 		if optional && errors.Is(err, fs.ErrNotExist) {
 			return nil, true, nil

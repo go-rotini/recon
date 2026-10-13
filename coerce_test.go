@@ -412,7 +412,7 @@ func TestCoerceBool_StringInvalid(t *testing.T) {
 }
 
 func TestCoerceBool_WrongKind(t *testing.T) {
-	_, err := coerceInto[bool](NewValue(int64(1)), FieldTag{})
+	_, err := coerceInto[bool](NewValue(1.0), FieldTag{})
 	if !errors.Is(err, ErrTypeMismatch) {
 		t.Fatalf("err = %v, want wrapping ErrTypeMismatch", err)
 	}

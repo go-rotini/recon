@@ -2,7 +2,6 @@ package recon
 
 import (
 	"maps"
-	"slices"
 	"sync"
 )
 
@@ -13,6 +12,24 @@ type MapSource struct {
 	name string
 	mu   sync.RWMutex
 	data map[string]any
+
+	// envKeys, when set, makes the top-level keys environment variable
+	// names under this prefix (see [WithFileEnvKeys]).
+	envKeys *string
+}
+
+// envKeyName is the top-level key path is stored under in env-keys
+// mode.
+func (s *MapSource) envKeyName(path Path) string {
+	return SnakeUpperPrefixTransform(*s.envKeys)(path)
+}
+
+// nativeKey returns the key path is stored under.
+func (s *MapSource) nativeKey(path Path) string {
+	if s.envKeys == nil {
+		return path.String()
+	}
+	return s.envKeyName(path)
 }
 
 // NewMapSource returns a [MapSource] named name holding a deep copy of
@@ -36,6 +53,9 @@ func (s *MapSource) Get(path Path) (Value, bool, error) {
 	if len(path) == 0 {
 		return Value{}, false, nil
 	}
+	if s.envKeys != nil {
+		path = Path{s.envKeyName(path)}
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	cur := any(s.data)
@@ -53,23 +73,24 @@ func (s *MapSource) Get(path Path) (Value, bool, error) {
 }
 
 // Keys enumerates every leaf path in the underlying map. Intermediate
-// map nodes are not reported. The returned slice is sorted by
-// canonical path string.
+// map nodes are not reported. For a file read [WithFileEnvKeys], each
+// top-level key spelled exactly as Get looks it up (the prefix, then
+// upper case) is reported as its snake-upper path, as [OSEnvSource.Keys]
+// does. The returned slice is sorted by canonical path string.
 func (s *MapSource) Keys() []Path {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var out []Path
-	walkLeaves(s.data, nil, &out)
-	slices.SortFunc(out, func(a, b Path) int {
-		switch {
-		case a.String() < b.String():
-			return -1
-		case a.String() > b.String():
-			return 1
-		default:
-			return 0
+	if s.envKeys != nil {
+		for name := range s.data {
+			if p := parseSnakeUpper(name, *s.envKeys); len(p) > 0 && s.envKeyName(p) == name {
+				out = append(out, p)
+			}
 		}
-	})
+	} else {
+		walkLeaves(s.data, nil, &out)
+	}
+	sortPaths(out)
 	return out
 }
 
@@ -131,4 +152,14 @@ func deepCopyValue(v any) any {
 	default:
 		return v
 	}
+}
+
+// newFileMapSource is [NewMapSource] for a file source built with cfg.
+func newFileMapSource(name string, decoded map[string]any, cfg fileOptions) *MapSource {
+	ms := NewMapSource(name, decoded)
+	if cfg.envKeys {
+		prefix := cfg.envPrefix
+		ms.envKeys = &prefix
+	}
+	return ms
 }

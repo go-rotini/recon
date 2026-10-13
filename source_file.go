@@ -2,13 +2,14 @@ package recon
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // FileSource is a codec-driven [Source] backed by a single file on
@@ -46,8 +47,11 @@ type FileSource struct {
 	// parseErr builds the error for a decode failure.
 	parseErr parseErrorFunc
 
-	// reload serializes Reload calls.
+	// reload serializes Reload calls and guards stamp and watcher.
 	reload sync.Mutex
+
+	// stamp describes the file as it was before the last read.
+	stamp fileStamp
 }
 
 // NewFileSource constructs a [FileSource] for path. Codec resolution
@@ -57,7 +61,8 @@ type FileSource struct {
 // [*ParseError] with the resolved path and, when the parser reports
 // one, the line and column.
 //
-// The source's Name is the basename of the resolved path.
+// The source's Name is the basename of the resolved path, unless
+// [WithFileName] sets one.
 func NewFileSource(path string, opts ...FileOption) (Source, error) {
 	return newFileSource(DefaultCodecs(), newParseError, path, opts)
 }
@@ -87,7 +92,11 @@ func newFileSource(codecs *Codecs, parseErr parseErrorFunc, path string, opts []
 		return nil, err
 	}
 
-	name := filepath.Base(resolved)
+	name := cfg.name
+	if name == "" {
+		name = filepath.Base(resolved)
+	}
+	stamp := statFile(resolved)
 	data, missing, err := readFileMaybeOptional(resolved, cfg.optional)
 	if err != nil {
 		return nil, err
@@ -102,12 +111,13 @@ func newFileSource(codecs *Codecs, parseErr parseErrorFunc, path string, opts []
 	}
 
 	src := &FileSource{
-		MapSource:    NewMapSource(name, decoded),
+		MapSource:    newFileMapSource(name, decoded, cfg),
 		resolvedPath: resolved,
 		codec:        codec,
 		optional:     cfg.optional,
 		watcher:      cfg.watcher,
 		parseErr:     parseErr,
+		stamp:        stamp,
 	}
 	if missing {
 		src.missing.Store(true)
@@ -136,10 +146,12 @@ func (s *FileSource) Reload() error {
 	s.reload.Lock()
 	defer s.reload.Unlock()
 
+	stamp := statFile(s.resolvedPath)
 	data, missing, err := readFileMaybeOptional(s.resolvedPath, s.optional)
 	if err != nil {
 		return err
 	}
+	s.stamp = stamp
 	s.missing.Store(missing)
 	if missing {
 		s.Replace(map[string]any{})
@@ -158,7 +170,9 @@ func (s *FileSource) Reload() error {
 // [WatcherFactory] it returns a closed channel.
 //
 // Each upstream notification triggers a [FileSource.Reload], then
-// forwards a [SourceChange] carrying any reload error.
+// forwards a [SourceChange] carrying any reload error. A write between
+// the last read and the start of the subscription is picked up as one
+// such change when Watch starts.
 func (s *FileSource) Watch(ctx context.Context) (<-chan SourceChange, error) {
 	factory := s.watcherFactory()
 	if factory == nil {
@@ -199,6 +213,15 @@ func (s *FileSource) fanWatchEvents(
 	out chan<- SourceChange,
 ) {
 	defer close(out)
+	// The watcher only reports writes after it subscribed; a write
+	// between the last read and then is caught here.
+	if s.changedSinceRead() {
+		next := SourceChange{}
+		if err := s.Reload(); err != nil {
+			next.Err = err
+		}
+		forwardChange(ctx, out, next)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -264,7 +287,7 @@ func resolveFilePath(path string, cfg fileOptions) (string, error) {
 		if firstResolved == "" {
 			firstResolved = abs
 		}
-		if fileExists(abs) {
+		if !fileMissing(abs) {
 			return abs, nil
 		}
 	}
@@ -327,18 +350,41 @@ func resolveFileCodec(path string, cfg fileOptions, codecs *Codecs) (Codec, erro
 // readFileMaybeOptional reads path. With optional=true a missing file
 // returns (nil, true, nil); other errors surface regardless.
 func readFileMaybeOptional(path string, optional bool) (data []byte, missing bool, err error) {
-	if !fileExists(path) {
-		if optional {
-			return nil, true, nil
-		}
-		return nil, false, fmt.Errorf("recon: file %q: %w", path, fs.ErrNotExist)
-	}
 	b, err := readFileCapped(path)
 	if err != nil {
-		if optional && errors.Is(err, fs.ErrNotExist) {
-			return nil, true, nil
+		if isNotExist(err) {
+			if optional {
+				return nil, true, nil
+			}
+			return nil, false, fmt.Errorf("recon: file %q: %w", path, fs.ErrNotExist)
 		}
 		return nil, false, fmt.Errorf("recon: read %q: %w", path, err)
 	}
 	return b, false, nil
+}
+
+// fileStamp is what os.Stat reports about a file, enough to tell that
+// it was written since.
+type fileStamp struct {
+	exists bool
+	size   int64
+	mod    time.Time
+}
+
+// statFile stamps path; a missing or unreadable file has exists false.
+func statFile(path string) fileStamp {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}
+	}
+	return fileStamp{exists: true, size: info.Size(), mod: info.ModTime()}
+}
+
+// changedSinceRead reports whether the file looks different from when
+// it was last read.
+func (s *FileSource) changedSinceRead() bool {
+	s.reload.Lock()
+	defer s.reload.Unlock()
+	cur := statFile(s.resolvedPath)
+	return cur.exists != s.stamp.exists || cur.size != s.stamp.size || !cur.mod.Equal(s.stamp.mod)
 }

@@ -39,9 +39,24 @@ func (tomlCodec) Encode(v map[string]any) ([]byte, error) {
 	return b, nil
 }
 
+// tomlDecodeError gives every parser error that knows its position a
+// line and column.
 func tomlDecodeError(err error) error {
 	if e, ok := errors.AsType[*toml.SyntaxError](err); ok {
 		return &codecError{format: FormatTOML, err: err, line: e.Pos.Line, col: e.Pos.Column, msg: e.Message}
+	}
+	var pos toml.Position
+	if e, ok := errors.AsType[*toml.DuplicateKeyError](err); ok {
+		pos = e.Pos
+	} else if e, ok := errors.AsType[*toml.OverflowError](err); ok {
+		pos = e.Pos
+	} else if e, ok := errors.AsType[*toml.InlineTableError](err); ok {
+		pos = e.Pos
+	} else if e, ok := errors.AsType[*toml.ConflictError](err); ok {
+		pos = e.Pos
+	}
+	if pos.Line > 0 {
+		return atPosition(FormatTOML, err, pos.Line, pos.Column)
 	}
 	return fmt.Errorf("recon: toml decode: %w", err)
 }

@@ -12,11 +12,16 @@ import (
 // YAML / TOML / JSONC / JSON / Dotenv values implement it; users plug
 // in third-party parsers by implementing the same shape.
 //
-// Decode returns a nested map[string]any whose leaves are limited to
+// Decode returns a nested map[string]any whose leaves are normally
 // string, bool, int64, float64, time.Time, []any, map[string]any, or
-// nil. Codecs are responsible for widening native numeric types and
-// for converting implementation-specific types (yaml.Node, etc.) at
-// the boundary.
+// nil. Codecs should widen native numeric types and convert
+// implementation-specific types (yaml.Node, etc.) at the boundary. The
+// registry also takes other leaves as [NewValue] does: other integer
+// and float types are widened (a uint64 beyond int64 becomes its
+// decimal text), and any other value becomes its fmt.Sprint text. The
+// bundled YAML codec returns such a uint64, and the bundled TOML codec
+// its local date, date-time and time types, whose text is the TOML
+// form ("2024-01-02", "2024-01-02T03:04:05", "03:04:05").
 //
 // Encode is the inverse and should be byte-stable for the same input
 // (deterministic key ordering, no whitespace drift) so round-trips
@@ -41,12 +46,17 @@ type Codec interface {
 type Codecs struct {
 	mu     sync.RWMutex
 	byName map[string]Codec
+
+	// order records when each name was last registered, so
+	// [Codecs.ByExtension] can prefer the most recent claimant.
+	order map[string]uint64
+	next  uint64
 }
 
 // NewCodecs returns a [Codecs] pre-populated with initial. Later
 // entries with the same Name shadow earlier ones.
 func NewCodecs(initial ...Codec) *Codecs {
-	c := &Codecs{byName: make(map[string]Codec, len(initial))}
+	c := &Codecs{byName: make(map[string]Codec, len(initial)), order: make(map[string]uint64, len(initial))}
 	for _, codec := range initial {
 		c.Register(codec)
 	}
@@ -61,6 +71,8 @@ func (c *Codecs) Register(codec Codec) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.byName[codec.Name()] = codec
+	c.next++
+	c.order[codec.Name()] = c.next
 }
 
 // Unregister removes the codec named name. Unknown names are ignored.
@@ -68,6 +80,7 @@ func (c *Codecs) Unregister(name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.byName, name)
+	delete(c.order, name)
 }
 
 // ByName returns the codec named name. Lookup is case-sensitive.
@@ -79,17 +92,23 @@ func (c *Codecs) ByName(name string) (Codec, bool) {
 }
 
 // ByExtension returns the codec whose [Codec.Extensions] includes ext
-// (case-insensitive, ext should include the leading dot). On a miss it
-// maps ext to a canonical name as [DetectFormat] does and returns the
-// codec registered under that name.
+// (case-insensitive, ext should include the leading dot); when several
+// do, the one registered most recently wins. On a miss it maps ext to a
+// canonical name as [DetectFormat] does and returns the codec
+// registered under that name.
 func (c *Codecs) ByExtension(ext string) (Codec, bool) {
 	ext = strings.ToLower(ext)
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	for _, codec := range c.byName {
-		if slices.Contains(codec.Extensions(), ext) {
-			return codec, true
+	var best Codec
+	var bestOrder uint64
+	for name, codec := range c.byName {
+		if slices.Contains(codec.Extensions(), ext) && (best == nil || c.order[name] > bestOrder) {
+			best, bestOrder = codec, c.order[name]
 		}
+	}
+	if best != nil {
+		return best, true
 	}
 	if name, ok := extToFormat[ext]; ok {
 		if codec, ok := c.byName[name]; ok {
@@ -115,8 +134,9 @@ func (c *Codecs) Names() []string {
 func (c *Codecs) Clone() *Codecs {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	out := &Codecs{byName: make(map[string]Codec, len(c.byName))}
+	out := &Codecs{byName: make(map[string]Codec, len(c.byName)), order: make(map[string]uint64, len(c.order)), next: c.next}
 	maps.Copy(out.byName, c.byName)
+	maps.Copy(out.order, c.order)
 	return out
 }
 

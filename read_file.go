@@ -1,20 +1,32 @@
 package recon
 
 import (
+	"errors"
 	"io"
 	"io/fs"
 	"os"
+	"syscall"
 )
 
-// MaxFileSize caps every file recon reads: a [FileSource]'s file and a
-// `fromFile` field's target. A larger file fails with [ErrFileTooLarge]
+// MaxFileSize caps every file recon reads: a [FileSource]'s or
+// [FileSourceFS]'s file, piped standard input and a `fromFile` field's
+// target. A larger file fails with [ErrFileTooLarge]
 // instead of being read into memory.
 const MaxFileSize int64 = 100 << 20
 
-// fileExists reports whether path exists. Symlinks are followed.
-func fileExists(path string) bool {
+// fileMissing reports whether path names no file: stat fails because
+// it, or a directory on the way, does not exist. Symlinks are followed.
+// A file that can't be reached for another reason, such as a
+// directory without search permission, is not missing.
+func fileMissing(path string) bool {
 	_, err := os.Stat(path)
-	return err == nil
+	return err != nil && isNotExist(err)
+}
+
+// isNotExist reports whether err says a file or a directory on its
+// path does not exist.
+func isNotExist(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
 
 // readFileCapped reads path, refusing anything over [MaxFileSize]. Errors
@@ -37,6 +49,36 @@ func readFileCapped(path string) ([]byte, error) {
 	}
 	if int64(len(data)) > MaxFileSize {
 		return nil, &fs.PathError{Op: "read", Path: path, Err: ErrFileTooLarge}
+	}
+	return data, nil
+}
+
+// readAllCapped reads r to EOF, failing with [ErrFileTooLarge] past
+// [MaxFileSize].
+func readAllCapped(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, MaxFileSize+1))
+	if err != nil {
+		return nil, err //nolint:wrapcheck // callers wrap with the input's name.
+	}
+	if int64(len(data)) > MaxFileSize {
+		return nil, ErrFileTooLarge
+	}
+	return data, nil
+}
+
+// readFSFileCapped is [readFileCapped] for a file in fsys.
+func readFSFileCapped(fsys fs.FS, path string) ([]byte, error) {
+	f, err := fsys.Open(path)
+	if err != nil {
+		return nil, err //nolint:wrapcheck // *fs.PathError already names the path.
+	}
+	defer func() { _ = f.Close() }()
+	if info, statErr := f.Stat(); statErr == nil && info.Mode().IsRegular() && info.Size() > MaxFileSize {
+		return nil, &fs.PathError{Op: "read", Path: path, Err: ErrFileTooLarge}
+	}
+	data, err := readAllCapped(f)
+	if err != nil {
+		return nil, &fs.PathError{Op: "read", Path: path, Err: err}
 	}
 	return data, nil
 }

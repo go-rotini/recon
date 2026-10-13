@@ -56,7 +56,7 @@ func (r *Registry) Describe() Description {
 		return Description{}
 	}
 	r.state.mu.Lock()
-	secrets := cloneStringSet(r.state.secretKeys)
+	secrets := r.secretMatcherLocked()
 	redactor := r.state.opts.secretRedactor
 	aliasByCanon := r.invertAliasesLocked()
 	r.state.mu.Unlock()
@@ -74,7 +74,7 @@ func (r *Registry) Describe() Description {
 	out := Description{Keys: make([]KeyDescription, 0, len(canonicalKeys))}
 	for _, ks := range canonicalKeys {
 		v := snap.values[ks]
-		_, secret := secrets[ks]
+		secret := secrets.has(ks)
 		display := v.String()
 		if secret && redactor != nil {
 			display = redactor(display)
@@ -111,7 +111,7 @@ func (r *Registry) DescribeKey(key string) (KeyDescription, bool) {
 	fullKey := r.fullKey(key)
 	r.state.mu.Lock()
 	canon := resolveAliasChain(fullKey, r.state.aliases)
-	secrets := cloneStringSet(r.state.secretKeys)
+	secrets := r.secretMatcherLocked()
 	redactor := r.state.opts.secretRedactor
 	aliasByCanon := r.invertAliasesLocked()
 	r.state.mu.Unlock()
@@ -120,7 +120,7 @@ func (r *Registry) DescribeKey(key string) (KeyDescription, bool) {
 	if !ok {
 		return KeyDescription{}, false
 	}
-	_, secret := secrets[canon]
+	secret := secrets.has(canon)
 	display := v.String()
 	if secret && redactor != nil {
 		display = redactor(display)
@@ -141,10 +141,12 @@ func (r *Registry) DescribeKey(key string) (KeyDescription, bool) {
 }
 
 // MarkSecret records key as containing sensitive data and rebuilds
-// the snapshot so [Registry.Describe], [Registry.Save] and
-// [Snapshot.String] redact it immediately. An empty key or a closed
-// registry is a no-op; repeated calls are harmless. A rebuild failure
-// is logged, not returned.
+// the snapshot so [Registry.Describe], [Registry.Save], [Snapshot.String]
+// and bind and validation errors redact it immediately. Every key below
+// key is covered too, and so are the key an alias resolves to and the
+// aliases of a marked key. An empty key or a closed registry is a
+// no-op; repeated calls are harmless. A rebuild failure is logged, not
+// returned (with secret values redacted).
 func (r *Registry) MarkSecret(key string) {
 	if key == "" {
 		return
@@ -152,22 +154,41 @@ func (r *Registry) MarkSecret(key string) {
 	if r.state.closed.Load() {
 		return
 	}
-	fullKey := r.fullKey(key)
-	r.state.mu.Lock()
-	if r.state.secretKeys == nil {
-		r.state.secretKeys = map[string]struct{}{}
+	r.markSecrets([]string{r.fullKey(key)})
+}
+
+// markSecrets adds the full keys to the secret set and rebuilds the
+// snapshot once, only when the set grew.
+func (r *Registry) markSecrets(keys []string) {
+	if len(keys) == 0 || r.state.closed.Load() {
+		return
 	}
-	r.state.secretKeys[fullKey] = struct{}{}
-	rebuildErr := r.rebuildSnapshotLocked()
+	r.state.mu.Lock()
+	var added []string
+	for _, k := range keys {
+		if _, ok := r.state.secretKeys[k]; ok {
+			continue
+		}
+		if r.state.secretKeys == nil {
+			r.state.secretKeys = map[string]struct{}{}
+		}
+		r.state.secretKeys[k] = struct{}{}
+		added = append(added, k)
+	}
+	var rebuildErr error
+	if len(added) > 0 {
+		rebuildErr = r.rebuildSnapshotLocked()
+	}
 	r.state.mu.Unlock()
 	if rebuildErr != nil {
 		r.state.logger.Warn("recon: MarkSecret rebuild rejected",
-			"key", fullKey, "err", rebuildErr)
+			"keys", added, "err", rebuildErr)
 	}
 }
 
 // IsSecret reports whether key has been marked secret, either via
-// [Registry.MarkSecret] or by a bind of a `secret`-tagged field.
+// [Registry.MarkSecret] or by a bind of a `secret`-tagged field or a
+// [Secret] field, directly or through a parent key or an alias.
 func (r *Registry) IsSecret(key string) bool {
 	if r.state.closed.Load() {
 		return false
@@ -175,8 +196,7 @@ func (r *Registry) IsSecret(key string) bool {
 	fullKey := r.fullKey(key)
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
-	_, ok := r.state.secretKeys[fullKey]
-	return ok
+	return secretMatcher{keys: r.state.secretKeys, aliases: r.state.aliases}.has(fullKey)
 }
 
 // invertAliasesLocked rebuilds the canonical → []alias map from the
@@ -192,16 +212,7 @@ func (r *Registry) invertAliasesLocked() map[string][]Path {
 		out[final] = append(out[final], ParsePath(alias))
 	}
 	for _, list := range out {
-		slices.SortFunc(list, func(a, b Path) int {
-			switch {
-			case a.String() < b.String():
-				return -1
-			case a.String() > b.String():
-				return 1
-			default:
-				return 0
-			}
-		})
+		sortPaths(list)
 	}
 	return out
 }

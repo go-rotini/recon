@@ -73,7 +73,7 @@ func IdentityTransform(p Path) string { return DotTransform(p) }
 // prefix return nil.
 func parseSnakeUpper(name, prefix string) Path {
 	if prefix != "" {
-		if !strings.HasPrefix(name, prefix) {
+		if !hasEnvPrefix(name, prefix) {
 			return nil
 		}
 		name = name[len(prefix):]

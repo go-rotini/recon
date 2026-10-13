@@ -55,7 +55,13 @@ type FieldTag struct {
 	// inlined without it.
 	Inline bool
 
-	// Required: an absent value is an error.
+	// OmitEmpty leaves a nil pointer-to-struct field nil when no key
+	// exists under its path, instead of allocating it. Set via
+	// `omitempty` in the primary tag; Bind ignores it in the env, json,
+	// yaml and toml fallback tags, where it means something else.
+	OmitEmpty bool
+
+	// Required: an absent or null value is an error.
 	Required bool
 
 	// NotEmpty: the resolved value must be non-empty.
@@ -75,7 +81,9 @@ type FieldTag struct {
 
 	// Expand substitutes ${other.key} references to other registry
 	// keys in the resolved value; ${key:-default} and ${key:?message}
-	// are also accepted.
+	// are also accepted. A reference is read relative to the registry
+	// being bound: through [Registry.Sub]("svc"), ${host} reads
+	// svc.host.
 	Expand bool
 
 	// FromFile: the resolved value is a path; load the file contents
@@ -99,9 +107,10 @@ type FieldTag struct {
 	// [ValidatorContext] on the target, or a [SchemaValidator].
 	Validate string
 
-	// Layout is the time.Time parse layout, default RFC 3339; RFC 3339
-	// with nanoseconds, [time.DateTime] and [time.DateOnly] are tried
-	// when it fails. Set via `layout=`.
+	// Layout is the time.Time parse layout, default RFC 3339. When it
+	// fails, the forms [Value.AsTime] accepts are tried: RFC 3339 with
+	// nanoseconds, a date-time without an offset, a bare date and a
+	// time of day. Set via `layout=`.
 	Layout string
 
 	// Base64 / Hex: byte-encoding decoders. Mutually exclusive.
@@ -164,6 +173,8 @@ func ParseTag(s string) FieldTag {
 			ft.Unset = true
 		case "inline":
 			ft.Inline = true
+		case "omitempty":
+			ft.OmitEmpty = true
 		case "base64":
 			ft.Base64 = true
 		case "hex":

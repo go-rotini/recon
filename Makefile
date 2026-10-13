@@ -6,7 +6,7 @@
 TOOL := go tool -modfile=tools.mod
 
 .PHONY: all clean lint test test-acceptance test-bench \
-        test-fuzz test-mutation test-race tools-upgrade vuln-tools
+        test-fuzz test-mutation test-race tools-upgrade vuln vuln-tools
 
 all: clean lint test test-acceptance test-bench test-fuzz test-mutation test-race
 
@@ -21,7 +21,8 @@ lint:
 	go mod verify -modfile=tools.mod
 	$(TOOL) golangci-lint run ./...
 	$(TOOL) go-licenses check ./...
-	$(TOOL) govulncheck ./...
+	@$(MAKE) --no-print-directory vuln
+	@$(MAKE) --no-print-directory vuln-tools
 
 test:
 	@go test -v -count=1 -coverprofile=test.out ./...
@@ -43,7 +44,7 @@ FUZZTIME ?= 60s
 
 test-fuzz:
 	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
-	for target in FuzzParsePath FuzzCoerce FuzzMergeMaps FuzzBind; do \
+	for target in FuzzParsePath FuzzCoerce FuzzMergeMaps FuzzBind FuzzCodecDecode FuzzJSONAgainstStdlib; do \
 		if ! go test -list "^$$target$$" . 2>/dev/null | grep -q "^$$target$$"; then \
 			echo "fuzz target $$target not found"; exit 1; \
 		fi; \
@@ -66,7 +67,12 @@ test-race:
 	@go test -race -count=1 -coverprofile=test_race.out ./...
 	@go tool cover -func=test_race.out | tail -1
 
-# Scans each tool in tools.mod as a built binary: that is exactly the code that runs.
+# govulncheck, one target per dependency graph; lint runs both. vuln scans go.mod from source,
+# test files included, which reports only vulnerable code this module can reach. vuln-tools scans
+# each tool in tools.mod as a built binary: that is exactly the code that runs.
+vuln:
+	@$(TOOL) govulncheck -test ./...
+
 vuln-tools:
 	@bin=$$(mktemp -d); trap 'rm -rf "$$bin"' EXIT; \
 	for pkg in $$(go list -modfile=tools.mod tool); do \

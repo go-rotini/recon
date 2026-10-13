@@ -185,7 +185,7 @@ func TestJSONCodec_StripsBOM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	if m["a"] != float64(1) {
+	if m["a"] != int64(1) {
 		t.Errorf("a = %v, want 1", m["a"])
 	}
 	if m, err := JSON.Decode([]byte(bom)); err != nil || len(m) != 0 {
