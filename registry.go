@@ -386,7 +386,7 @@ func (r *Registry) Validate() error {
 		secrets := r.secretMatcherLocked()
 		r.state.mu.Unlock()
 		redactValidationErrorsForSecrets(err, secrets)
-		return fmt.Errorf("recon: schema validation: %w", err)
+		return schemaValidationError(err)
 	}
 	return nil
 }
@@ -543,7 +543,7 @@ func (r *Registry) rebuildCandidateLocked() (*Snapshot, error) {
 	if r.state.opts.validator != nil {
 		if err := r.state.opts.validator.Validate(candidate.AsMap()); err != nil {
 			redactValidationErrorsForSecrets(err, candidate.secrets())
-			multi.Append(fmt.Errorf("recon: schema validation: %w", err))
+			multi.Append(schemaValidationError(err))
 		}
 	}
 	if len(multi.Errors) > 0 {
@@ -567,7 +567,11 @@ func (r *Registry) checkImmutableLocked(snap *Snapshot) []error {
 	secrets := snap.secrets()
 	var errs []error
 	for path, baseline := range r.state.immutableBaseline {
-		cur, ok := snap.lookup(path, nil)
+		mode := readExact
+		if baseline.Kind() == MapKind {
+			mode = readSection
+		}
+		cur, ok := snap.read(path, nil, mode)
 		if ok && valuesEqual(baseline, cur) {
 			continue
 		}

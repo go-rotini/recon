@@ -440,3 +440,19 @@ func (w DeprecationWarning) String() string {
 func genericDeprecationMessage(p Path) string {
 	return "recon: key " + p.String() + " is deprecated"
 }
+
+// schemaValidationError is a validator's error err as the registry
+// reports it: under a "recon: schema validation: " prefix, with err's
+// own "recon: " prefix dropped so it is not repeated.
+func schemaValidationError(err error) error {
+	return &schemaError{err: err}
+}
+
+// schemaError is the error [schemaValidationError] returns.
+type schemaError struct{ err error }
+
+func (e *schemaError) Error() string {
+	return "recon: schema validation: " + strings.TrimPrefix(e.err.Error(), "recon: ")
+}
+
+func (e *schemaError) Unwrap() error { return e.err }

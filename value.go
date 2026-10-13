@@ -280,10 +280,22 @@ func (v Value) IsZero() bool { return v.kind == NullKind }
 
 // Any returns the underlying Go value. The concrete type follows the
 // kind: string, int64, float64, bool, time.Time, time.Duration,
-// []Value, map[string]Value, [RawValue], or nil.
+// []Value, map[string]Value, [RawValue], or nil. The text of an integer
+// above the int64 range (see [NewValue]) is returned as the uint64, and
+// that of one beyond the uint64 range as a [json.Number].
 func (v Value) Any() any {
 	if v.kind == NullKind {
 		return nil
+	}
+	if s, ok := v.raw.(string); ok {
+		if v.bigUint {
+			if u, err := strconv.ParseUint(s, 10, 64); err == nil {
+				return u
+			}
+		}
+		if v.bigInt {
+			return json.Number(s)
+		}
 	}
 	return v.raw
 }
@@ -291,21 +303,9 @@ func (v Value) Any() any {
 // unwrapValueDeep converts v into the plain-Go shape codecs expect:
 // scalars unchanged, [SliceKind] → []any, [MapKind] → map[string]any,
 // recursively. Used by save/encode paths where [Value.Any]'s
-// map[string]Value / []Value would not round-trip. The text of a
-// uint64 above math.MaxInt64 becomes the uint64 again, and that of a
-// larger integer a [json.Number].
+// map[string]Value / []Value would not round-trip.
 func unwrapValueDeep(v Value) any {
 	switch v.Kind() {
-	case StringKind:
-		if v.bigUint {
-			if u, err := strconv.ParseUint(v.String(), 10, 64); err == nil {
-				return u
-			}
-		}
-		if v.bigInt {
-			return json.Number(v.String())
-		}
-		return v.Any()
 	case SliceKind:
 		s, ok := v.Any().([]Value)
 		if !ok {

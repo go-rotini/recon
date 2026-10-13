@@ -15,9 +15,17 @@ import (
 // them (see [Snapshot.Get]). The error is non-nil only when the
 // registry is closed.
 //
-// The typed getters (GetString, GetInt and so on, and [Get]) return
-// the type's zero value, true and no error for a key set to null.
+// The typed getters (GetString, GetInt and so on, and [Get]) read the
+// value set at key itself, and return the type's zero value, true and
+// no error for a key set to null. GetStringMap reads key as a map: a
+// null or scalar at key yields to keys below it set by a layer of
+// higher precedence, or by the same layer.
 func (r *Registry) Get(key string) (Value, bool, error) {
+	return r.get(key, readGet)
+}
+
+// get is [Registry.Get] with the read mode mode.
+func (r *Registry) get(key string, mode readMode) (Value, bool, error) {
 	if err := r.validateNotClosed(); err != nil {
 		return Value{}, false, err
 	}
@@ -25,7 +33,7 @@ func (r *Registry) Get(key string) (Value, bool, error) {
 	if snap == nil {
 		return Value{}, false, nil
 	}
-	v, ok := r.lookupKey(snap, key)
+	v, ok := r.lookupKey(snap, key, mode)
 	return v, ok, nil
 }
 
@@ -45,7 +53,7 @@ func (r *Registry) GetPath(p Path) (Value, bool, error) {
 // GetString returns the string value at key. Returns
 // [ErrTypeMismatch] when the resolved kind is not [StringKind].
 func (r *Registry) GetString(key string) (string, bool, error) {
-	v, ok, err := r.Get(key)
+	v, ok, err := r.get(key, readExact)
 	if err != nil || !ok {
 		return "", ok, err
 	}
@@ -71,7 +79,7 @@ func (r *Registry) GetInt(key string) (int, bool, error) {
 // [IntKind]: strings are not parsed and floats are not converted (both
 // return [ErrTypeMismatch]); use [Registry.Bind] for conversion.
 func (r *Registry) GetInt64(key string) (int64, bool, error) {
-	v, ok, err := r.Get(key)
+	v, ok, err := r.get(key, readExact)
 	if err != nil || !ok {
 		return 0, ok, err
 	}
@@ -88,7 +96,7 @@ func (r *Registry) GetInt64(key string) (int64, bool, error) {
 // GetFloat returns the value at key as float64. [FloatKind] and
 // [IntKind] values are accepted; strings are not parsed.
 func (r *Registry) GetFloat(key string) (float64, bool, error) {
-	v, ok, err := r.Get(key)
+	v, ok, err := r.get(key, readExact)
 	if err != nil || !ok {
 		return 0, ok, err
 	}
@@ -105,7 +113,7 @@ func (r *Registry) GetFloat(key string) (float64, bool, error) {
 // GetBool returns the value at key as bool. The value must be
 // [BoolKind]; strings are not parsed.
 func (r *Registry) GetBool(key string) (bool, bool, error) {
-	v, ok, err := r.Get(key)
+	v, ok, err := r.get(key, readExact)
 	if err != nil || !ok {
 		return false, ok, err
 	}
@@ -123,7 +131,7 @@ func (r *Registry) GetBool(key string) (bool, bool, error) {
 // time.Duration, a string parseable by [time.ParseDuration], or an
 // integer number of nanoseconds is accepted.
 func (r *Registry) GetDuration(key string) (time.Duration, bool, error) {
-	v, ok, err := r.Get(key)
+	v, ok, err := r.get(key, readExact)
 	if err != nil || !ok {
 		return 0, ok, err
 	}
@@ -140,7 +148,7 @@ func (r *Registry) GetDuration(key string) (time.Duration, bool, error) {
 // GetTime returns the value at key as time.Time. A native time.Time
 // or an RFC 3339 string is accepted.
 func (r *Registry) GetTime(key string) (time.Time, bool, error) {
-	v, ok, err := r.Get(key)
+	v, ok, err := r.get(key, readExact)
 	if err != nil || !ok {
 		return time.Time{}, ok, err
 	}
@@ -157,7 +165,7 @@ func (r *Registry) GetTime(key string) (time.Time, bool, error) {
 // GetStringSlice returns the value at key as []string. The wire kind
 // must be [SliceKind]; each element is projected via [Value.AsString].
 func (r *Registry) GetStringSlice(key string) ([]string, bool, error) {
-	v, ok, err := r.Get(key)
+	v, ok, err := r.get(key, readExact)
 	if err != nil || !ok {
 		return nil, ok, err
 	}
@@ -182,7 +190,7 @@ func (r *Registry) GetStringSlice(key string) ([]string, bool, error) {
 // GetStringMap returns the value at key as map[string]string. The
 // wire kind must be [MapKind].
 func (r *Registry) GetStringMap(key string) (map[string]string, bool, error) {
-	v, ok, err := r.Get(key)
+	v, ok, err := r.get(key, readSection)
 	if err != nil || !ok {
 		return nil, ok, err
 	}
@@ -225,7 +233,7 @@ func (r *Registry) IsSet(key string) bool {
 	if snap == nil {
 		return false
 	}
-	_, ok := r.lookupKey(snap, key)
+	_, ok := r.lookupKey(snap, key, readGet)
 	return ok
 }
 
@@ -267,7 +275,11 @@ func (r *Registry) AllKeys() []string {
 // [Registry.Bind] for string conversion and struct binding.
 func Get[T any](r *Registry, key string) (T, bool, error) {
 	var zero T
-	v, ok, err := r.Get(key)
+	mode := readExact
+	if _, isValue := any(zero).(Value); isValue {
+		mode = readGet
+	}
+	v, ok, err := r.get(key, mode)
 	if err != nil || !ok {
 		return zero, ok, err
 	}
@@ -387,12 +399,13 @@ func valueAsUint64(v Value) (uint64, error) {
 	return uint64(i), nil
 }
 
-// lookupKey resolves key in snap. On a root registry a key without "["
-// is already in canonical form and is looked up as given.
-func (r *Registry) lookupKey(snap *Snapshot, key string) (Value, bool) {
+// lookupKey resolves key in snap as mode asks. On a root registry a
+// key without "[" is already in canonical form and is looked up as
+// given.
+func (r *Registry) lookupKey(snap *Snapshot, key string, mode readMode) (Value, bool) {
 	if len(r.prefix) == 0 && strings.IndexByte(key, '[') < 0 {
-		return snap.lookup(key, nil)
+		return snap.read(key, nil, mode)
 	}
 	p := r.fullPath(ParsePath(key))
-	return snap.lookup(p.String(), p)
+	return snap.read(p.String(), p, mode)
 }

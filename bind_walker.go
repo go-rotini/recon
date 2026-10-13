@@ -248,7 +248,7 @@ func (w *bindWalker) bindLeaf(fv reflect.Value, prefix Path, fp *fieldPlan, inhe
 	if secret {
 		w.markSecret(pathStr)
 	}
-	value, found := w.lookup(path, tag.Source, fp.aliases)
+	value, found := w.lookup(path, tag.Source, fp.aliases, leafReadMode(fv.Type(), tag))
 	var nullFrom []string
 	if found && (tag.Required || tag.HasDefault) && value.Kind() == NullKind {
 		found, nullFrom = false, []string{value.Source()}
@@ -620,11 +620,11 @@ func (w *bindWalker) applyPostBind(path Path, tag FieldTag) {
 // aliases. When source names a pinned source, a hit at path from any
 // other source is rejected so the field falls through to default /
 // required logic.
-func (w *bindWalker) lookup(path Path, source string, aliases []Path) (Value, bool) {
-	v, ok := w.lookupSnapshot(path)
+func (w *bindWalker) lookup(path Path, source string, aliases []Path, mode readMode) (Value, bool) {
+	v, ok := w.lookupSnapshot(path, mode)
 	if !ok {
 		for _, alias := range aliases {
-			av, aok := w.lookupSnapshot(alias)
+			av, aok := w.lookupSnapshot(alias, mode)
 			if aok {
 				return av, true
 			}
@@ -640,12 +640,12 @@ func (w *bindWalker) lookup(path Path, source string, aliases []Path) (Value, bo
 // lookupSnapshot reads the snapshot directly. The walker passes
 // already-prefixed absolute paths, so bypassing [Registry.GetPath]
 // avoids double-prefixing on Sub-view binds.
-func (w *bindWalker) lookupSnapshot(path Path) (Value, bool) {
+func (w *bindWalker) lookupSnapshot(path Path, mode readMode) (Value, bool) {
 	snap := w.registry.state.snapshot.Load()
 	if snap == nil {
 		return Value{}, false
 	}
-	return snap.Get(path)
+	return snap.read(path.String(), path, mode)
 }
 
 // segmentsFor returns the path segments representing sf. With
@@ -844,4 +844,21 @@ func assignCustomDecoded(fv reflect.Value, out any) error {
 	}
 	fv.Set(rv)
 	return nil
+}
+
+// leafReadMode is the read a field of type t needs: a map or `any`
+// field reads its key as a map, unless its value is a file path or a
+// document to decode; any other field reads the value set at the key.
+func leafReadMode(t reflect.Type, tag FieldTag) readMode {
+	// The bound stops on a pointer type that points to itself.
+	for range 16 {
+		if t.Kind() != reflect.Pointer {
+			break
+		}
+		t = t.Elem()
+	}
+	if (t.Kind() == reflect.Map || t.Kind() == reflect.Interface) && !tag.FromFile && tag.Format == "" {
+		return readSection
+	}
+	return readExact
 }

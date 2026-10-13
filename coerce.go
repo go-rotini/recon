@@ -102,10 +102,8 @@ func coerceWith(v Value, dest reflect.Value, tag FieldTag, er elemRules) error {
 // coerceInterface assigns v to an empty-interface dest — an `any` field, or a
 // map[string]any / []any element. MapKind / SliceKind values recurse into
 // nested map[string]any / []any (so a whole subtree binds), and scalars take
-// the form a JSON or YAML file gives them, whatever the format: a time as
-// RFC 3339 text, an integer above the int64 range as a uint64, and one
-// beyond the uint64 range as a [json.Number]. A non-empty interface dest
-// is unsupported.
+// the form [Value.Any] gives them. A non-empty interface dest is
+// unsupported.
 func coerceInterface(v Value, dest reflect.Value, er elemRules) error {
 	if dest.NumMethod() != 0 {
 		return fmt.Errorf("%w: cannot coerce %s into %s",
@@ -131,12 +129,8 @@ func coerceInterface(v Value, dest reflect.Value, er elemRules) error {
 	case NullKind:
 		dest.Set(reflect.Zero(dest.Type()))
 		return nil
-	case TimeKind:
-		// As text, the form a time takes in YAML and JSON.
-		dest.Set(reflect.ValueOf(v.String()))
-		return nil
 	default:
-		dest.Set(reflect.ValueOf(unwrapValueDeep(v)))
+		dest.Set(reflect.ValueOf(v.Any()))
 		return nil
 	}
 }

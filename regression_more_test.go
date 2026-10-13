@@ -1006,10 +1006,10 @@ func TestJSONSchema_BigIntegerIsNumber(t *testing.T) {
 	}
 }
 
-// A map or `any` field takes values in the shape JSON and YAML give
-// them, whatever the format: times as RFC 3339 text and unsigned
-// integers above int64 as uint64.
-func TestBind_AnyTakesJSONShape(t *testing.T) {
+// A map or `any` field takes the values Value.Any gives: a TOML
+// date-time as a time.Time, an integer above int64 as a uint64 and one
+// beyond uint64 as a json.Number.
+func TestBind_AnyMatchesValueAny(t *testing.T) {
 	file, err := NewBufferSource("t", FormatTOML, []byte("[m]\nwhen = 2024-01-02T03:04:05Z\nday = 2024-01-02\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -1021,6 +1021,9 @@ func TestBind_AnyTakesJSONShape(t *testing.T) {
 	if err := r.Set("m.big", uint64(math.MaxUint64)); err != nil {
 		t.Fatal(err)
 	}
+	if err := r.Set("m.huge", json.Number("123456789012345678901234567890")); err != nil {
+		t.Fatal(err)
+	}
 	var c struct {
 		M    map[string]any
 		When any `recon:"m.when"`
@@ -1028,11 +1031,21 @@ func TestBind_AnyTakesJSONShape(t *testing.T) {
 	if err := r.Bind(&c); err != nil {
 		t.Fatal(err)
 	}
-	if c.M["when"] != "2024-01-02T03:04:05Z" || c.When != "2024-01-02T03:04:05Z" || c.M["day"] != "2024-01-02" {
-		t.Errorf("times: %#v, %#v", c.M, c.When)
+	when := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	if tm, ok := c.M["when"].(time.Time); !ok || !tm.Equal(when) || c.M["day"] != "2024-01-02" {
+		t.Errorf("times: %#v", c.M)
 	}
-	if c.M["big"] != uint64(math.MaxUint64) {
-		t.Errorf("big = %#v, want uint64", c.M["big"])
+	if tm, ok := c.When.(time.Time); !ok || !tm.Equal(when) {
+		t.Errorf("When = %#v, want time.Time", c.When)
+	}
+	if c.M["big"] != uint64(math.MaxUint64) || c.M["huge"] != json.Number("123456789012345678901234567890") {
+		t.Errorf("big, huge = %#v, %#v", c.M["big"], c.M["huge"])
+	}
+	for _, k := range []string{"when", "big", "huge"} {
+		v, _, _ := r.Get("m." + k)
+		if got := v.Any(); !reflect.DeepEqual(got, c.M[k]) {
+			t.Errorf("Get(m.%s).Any() = %#v, Bind gave %#v", k, got, c.M[k])
+		}
 	}
 }
 
@@ -1044,5 +1057,194 @@ func TestJSON_NullDocumentIsEmpty(t *testing.T) {
 		if err != nil || len(m) != 0 {
 			t.Errorf("%s: %v, %v", c.Name(), m, err)
 		}
+	}
+}
+
+// A scalar read of a key gets the value set there, even when keys below
+// it are set by the same or a higher layer; only a map read assembles
+// the keys below.
+func TestResolve_ScalarReadKeepsOwnValue(t *testing.T) {
+	t.Setenv("APP_PORT", "8080")
+	t.Setenv("APP_PORT_RANGE", "10")
+	t.Setenv("APP_TIMEOUT", "5s")
+	t.Setenv("APP_TIMEOUT_RETRY", "2")
+	t.Setenv("APP_LOG", "info")
+	t.Setenv("APP_LOG_FORMAT", "json")
+	t.Setenv("APP_DB_POOL", "5")
+	file, err := NewBufferSource("file", "yaml", []byte("db: postgres://h/x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(WithoutWatch(), WithSource(NewOSEnvSource(WithEnvPrefix("APP_"))), WithSource(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, _, err := r.GetString("log"); err != nil || s != "info" {
+		t.Errorf("GetString(log) = %q, %v", s, err)
+	}
+	if s, _, err := r.GetString("db"); err != nil || s != "postgres://h/x" {
+		t.Errorf("GetString(db) = %q, %v", s, err)
+	}
+	if v, _, _ := r.Get("log"); v.String() != "info" {
+		t.Errorf("Get(log) = %v", v)
+	}
+	// Before a bind lists log.format as log_format, a map read of log
+	// assembles the keys below it.
+	var m map[string]string
+	if err := r.UnmarshalKey("log", &m); err != nil || m["format"] != "json" || len(m) != 1 {
+		t.Errorf("UnmarshalKey(log) into map = %v, %v", m, err)
+	}
+	if m, _, err := r.GetStringMap("log"); err != nil || m["format"] != "json" {
+		t.Errorf("GetStringMap(log) = %v, %v", m, err)
+	}
+	var c struct {
+		Port         int
+		PortRange    int
+		Timeout      time.Duration
+		TimeoutRetry int
+		Log          string
+		LogFormat    string
+		DB           string `recon:"db"`
+		DBPool       int    `recon:"db_pool"`
+	}
+	if err := r.Bind(&c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Port != 8080 || c.PortRange != 10 || c.Timeout != 5*time.Second || c.TimeoutRetry != 2 {
+		t.Errorf("numbers: %+v", c)
+	}
+	if c.Log != "info" || c.LogFormat != "json" || c.DB != "postgres://h/x" || c.DBPool != 5 {
+		t.Errorf("strings: %+v", c)
+	}
+	var d time.Duration
+	if err := r.UnmarshalKey("timeout", &d); err != nil || d != 5*time.Second {
+		t.Errorf("UnmarshalKey(timeout) = %v, %v", d, err)
+	}
+}
+
+// A section assembled for a map read lists a value read through two
+// spellings once.
+func TestResolve_SubtreeListsOneSpelling(t *testing.T) {
+	t.Setenv("APP_DB_MAX_CONNS", "5")
+	r, err := New(WithoutWatch(), WithSource(NewOSEnvSource(WithEnvPrefix("APP_"))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		DB struct{ MaxConns int } `recon:"db"`
+	}
+	if err := r.Bind(&c); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"max_conns": "5"}
+	if v, _, _ := r.Get("db"); !reflect.DeepEqual(unwrapValueDeep(v), want) {
+		t.Errorf("Get(db) = %v, want %v", v, want)
+	}
+	var m map[string]any
+	if err := r.UnmarshalKey("db", &m); err != nil || !reflect.DeepEqual(m, want) {
+		t.Errorf("UnmarshalKey(db) = %v, %v", m, err)
+	}
+	var f struct {
+		DB map[string]any `recon:"db"`
+	}
+	if err := r.Bind(&f); err != nil || !reflect.DeepEqual(f.DB, want) {
+		t.Errorf("map field = %v, %v", f.DB, err)
+	}
+}
+
+// An alias reads as its key does when keys below the key win over it.
+func TestResolve_AliasOfOverriddenParent(t *testing.T) {
+	t.Setenv("APP_LABELS_TEAM", "core")
+	file, err := NewBufferSource("file", "yaml", []byte("labels:\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(WithoutWatch(), WithSource(NewOSEnvSource(WithEnvPrefix("APP_"))), WithSource(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RegisterAlias("lbl", "labels"); err != nil {
+		t.Fatal(err)
+	}
+	if v, _, _ := r.Get("lbl"); v.Kind() != MapKind {
+		t.Errorf("Get(lbl) = %v (%s), want the map", v, v.Kind())
+	}
+	var c struct {
+		L map[string]string `recon:"lbl"`
+	}
+	if err := r.Bind(&c); err != nil || c.L["team"] != "core" {
+		t.Errorf("bind via alias = %v, %v", c.L, err)
+	}
+}
+
+// An entry inside a map that a higher layer set at a parent wins over a
+// lower layer's value for the same key.
+func TestResolve_HigherParentMapEntryWins(t *testing.T) {
+	hi := NewMapSource("hi", map[string]any{"db": map[string]string{"host": "hihost"}})
+	file, err := NewBufferSource("file", "yaml", []byte("db:\n  host: filehost\n  port: 5\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(WithoutWatch(), WithSource(hi), WithSource(file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _, _ := r.Get("db.host"); v.String() != "hihost" || v.Source() != "hi" {
+		t.Errorf("Get(db.host) = %v from %s, want hihost from hi", v, v.Source())
+	}
+	var c struct {
+		DB struct {
+			Host string
+			Port int
+		} `recon:"db"`
+	}
+	if err := r.Bind(&c); err != nil || c.DB.Host != "hihost" || c.DB.Port != 5 {
+		t.Errorf("bind = %+v, %v", c.DB, err)
+	}
+}
+
+// A YAML float beyond the float64 range is a positioned error, as in
+// JSON, once the yaml dependency reports such numbers.
+func TestYAML_FloatOverflowIsPositioned(t *testing.T) {
+	if m, _ := YAML.Decode([]byte("x: 123456789012345678901234567890\n")); reflect.TypeOf(m["x"]) == reflect.TypeFor[float64]() {
+		t.Skip("the yaml dependency rounds integers beyond uint64 to float64")
+	}
+	_, err := YAML.Decode([]byte("a: 1\nb: [2, -1e400]\n"))
+	pe, ok := errors.AsType[PositionError](err)
+	if !ok {
+		t.Fatalf("err = %v, want a PositionError", err)
+	}
+	if line, col := pe.Position(); line != 2 || col != 8 {
+		t.Fatalf("position %d:%d, want 2:8 (%v)", line, col, err)
+	}
+	if msg := pe.Message(); msg != "value -1e400 overflows float64" || !errors.Is(err, strconv.ErrRange) {
+		t.Fatalf("message %q (%v)", msg, err)
+	}
+	if m, err := YAML.Decode([]byte("a: '1e400'\n")); err != nil || m["a"] != "1e400" {
+		t.Fatalf("quoted: %v, %v", m, err)
+	}
+}
+
+type failingSchema struct{ err *error }
+
+func (f failingSchema) Validate(map[string]any) error { return *f.err }
+
+// A validator's error is reported under one "recon: " prefix.
+func TestValidate_PrefixOnce(t *testing.T) {
+	cause := fmt.Errorf("%w: jsonschema: max evaluations exceeded", ErrValidation)
+	want := "recon: schema validation: validation failed: jsonschema: max evaluations exceeded"
+	src := func() Option { return WithSource(NewMapSource("m", map[string]any{"a": 1})) }
+	_, err := New(WithoutWatch(), src(), WithValidator(failingSchema{&cause}))
+	if err == nil || err.Error() != want || !errors.Is(err, ErrValidation) {
+		t.Fatalf("New: %v, want %q", err, want)
+	}
+	var fail error
+	r, err := New(WithoutWatch(), src(), WithValidator(failingSchema{&fail}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fail = cause
+	if err := r.Validate(); err == nil || err.Error() != want {
+		t.Fatalf("Validate: %v, want %q", err, want)
 	}
 }

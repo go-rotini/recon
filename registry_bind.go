@@ -27,10 +27,9 @@ import (
 // error, or [encoding.TextUnmarshaler] decodes itself, in that order.
 // A map, `any` or struct field also binds from a configuration file
 // section held as leaf keys. An `any` field, or an `any` element of a
-// map or slice, takes a value in the shape a JSON or YAML file gives
-// it, whatever the format: a time as RFC 3339 text, an integer above
-// the int64 range as a uint64, and one beyond the uint64 range as a
-// [encoding/json.Number].
+// map or slice, takes the value [Value.Any] gives: an integer above the
+// int64 range arrives as a uint64, and one beyond the uint64 range as
+// a [encoding/json.Number].
 //
 // Struct elements of slices and maps take their field names from the
 // same tags as top-level fields (a lowercased Go name is accepted too)
@@ -143,7 +142,7 @@ func (r *Registry) unmarshalKeyValue(key string, dest reflect.Value, opts []Deco
 		r.MarkSecret(key)
 	}
 	r.resolveBindPaths([]Path{r.fullPath(ParsePath(key))})
-	v, ok, err := r.Get(key)
+	v, ok, err := r.get(key, leafReadMode(dest.Type(), FieldTag{}))
 	if err != nil || !ok {
 		return err
 	}

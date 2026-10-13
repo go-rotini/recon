@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/go-rotini/yaml"
@@ -20,7 +22,8 @@ type yamlCodec struct{}
 // YAML is the [Codec] for YAML 1.2.2 documents (and the KYAML strict
 // subset), part of [DefaultCodecs]. Integers decode as [JSON]'s do: as
 // int64, as uint64 above the int64 range, and as a [json.Number] (in
-// decimal) outside both ranges.
+// decimal) outside both ranges; a float beyond the float64 range is a
+// positioned error, as in JSON.
 var YAML Codec = yamlCodec{}
 
 func (yamlCodec) Name() string         { return FormatYAML }
@@ -69,7 +72,11 @@ func (yamlCodec) Decode(data []byte) (map[string]any, error) {
 		return nil, fmt.Errorf("%w: yaml root must be a mapping, got %T",
 			ErrUnsupportedFormat, v)
 	}
-	yamlNumbers(m)
+	var overflow yamlOverflow
+	yamlNumbers(m, &overflow)
+	if overflow.texts != nil {
+		return nil, yamlOverflowError(data, overflow.texts)
+	}
 	return m, nil
 }
 
@@ -123,22 +130,26 @@ func yamlDecodeError(err error) error {
 }
 
 // yamlPkgPath is the import path of the yaml package.
-var yamlPkgPath = reflect.TypeFor[yaml.Encoder]().PkgPath()
+const yamlPkgPath = "github.com/go-rotini/yaml"
 
-// yamlNumbers replaces, in place, each number the yaml package hands
-// back as its own Number text (an integer outside the int64 and uint64
-// ranges, or a float beyond float64) by a [json.Number] in decimal for
-// an integer and by its text for a float.
-func yamlNumbers(v any) any {
+// yamlOverflow collects the text of each float beyond the float64
+// range that [yamlNumbers] finds.
+type yamlOverflow struct{ texts map[string]struct{} }
+
+// yamlNumbers replaces, in place, each integer the yaml package hands
+// back as its own Number text (one outside the int64 and uint64
+// ranges) by a [json.Number] in decimal. The text of a float beyond the
+// float64 range is added to overflow.
+func yamlNumbers(v any, overflow *yamlOverflow) any {
 	switch x := v.(type) {
 	case map[string]any:
 		for k, e := range x {
-			x[k] = yamlNumbers(e)
+			x[k] = yamlNumbers(e, overflow)
 		}
 		return x
 	case []any:
 		for i, e := range x {
-			x[i] = yamlNumbers(e)
+			x[i] = yamlNumbers(e, overflow)
 		}
 		return x
 	}
@@ -155,5 +166,33 @@ func yamlNumbers(v any) any {
 	if z, ok := new(big.Int).SetString(strings.TrimPrefix(s, "+"), base); ok {
 		return json.Number(z.String())
 	}
+	if overflow.texts == nil {
+		overflow.texts = map[string]struct{}{}
+	}
+	overflow.texts[s] = struct{}{}
 	return s
+}
+
+// yamlOverflowError reports the first plain scalar in data whose text
+// is in overflow, a float beyond the float64 range, as [JSON] does.
+func yamlOverflowError(data []byte, overflow map[string]struct{}) error {
+	var at *yaml.Node
+	if f, err := yaml.Parse(data); err == nil {
+		for _, doc := range f.Docs {
+			yaml.Walk(doc, func(n *yaml.Node) bool {
+				if at != nil {
+					return false
+				}
+				if _, hit := overflow[n.Value]; hit && n.Kind == yaml.ScalarNode && n.Style == yaml.PlainStyle {
+					at = n
+				}
+				return true
+			})
+		}
+	}
+	if at == nil {
+		return fmt.Errorf("recon: yaml decode: %w", errNumberRange(slices.Min(slices.Collect(maps.Keys(overflow)))))
+	}
+	err := errNumberRange(at.Value)
+	return &codecError{format: FormatYAML, err: err, line: at.Pos.Line, col: at.Pos.Column, msg: err.Error()}
 }

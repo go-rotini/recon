@@ -50,6 +50,7 @@ func FuzzJSONAgainstStdlib(f *testing.F) {
 	for _, s := range []string{
 		`{}`, `{"a": 1}`, `{"a": {"b": [1, -2, 3.5e2, "s", false, null]}}`,
 		`{"n": 9007199254740993, "u": 18446744073709551615, "x": 1e400}`,
+		`{"n": 123456789012345678901234567890}`, `{"0": 10000000000000000, "0000": 1000000000000000000000}`,
 		`{"a": 1, "a": 2}`, `[1]`, `{"a": 1} x`, "{\"a\": \"\xff\"}", `{"a": "\ud800"}`,
 	} {
 		f.Add([]byte(s))
@@ -109,6 +110,12 @@ func jsonSame(got, want any) bool {
 			f = float64(g)
 		case float64:
 			f = g
+		case json.Number:
+			p, err := strconv.ParseFloat(string(g), 64)
+			if err != nil && !errors.Is(err, strconv.ErrRange) {
+				return false
+			}
+			f = p
 		case string:
 			p, err := strconv.ParseFloat(g, 64)
 			if err != nil && !errors.Is(err, strconv.ErrRange) {
