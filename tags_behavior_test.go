@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -355,5 +356,28 @@ func TestBind_TransformUpperOnMultiSegmentName(t *testing.T) {
 	}
 	if c.X != "yes" {
 		t.Fatalf("got %q, want yes", c.X)
+	}
+}
+
+func TestDeprecationWarning_StringSaysDeprecatedOnce(t *testing.T) {
+	for _, tag := range []string{`recon:"old,deprecated"`, `recon:"old,deprecated=switch to new"`} {
+		r := newRegistry(t, WithSource(NewMapSource("m", map[string]any{"old": "v"})))
+		target := reflect.New(reflect.StructOf([]reflect.StructField{{
+			Name: "Old", Type: reflect.TypeFor[string](), Tag: reflect.StructTag(tag),
+		}}))
+		if err := r.Bind(target.Interface()); err != nil {
+			t.Fatal(err)
+		}
+		ws := r.DrainWarnings()
+		if len(ws) != 1 {
+			t.Fatalf("%s: warnings=%v", tag, ws)
+		}
+		if s := ws[0].String(); strings.Count(s, "deprecated") != 1 {
+			t.Errorf("%s: String()=%q, want one \"deprecated\"", tag, s)
+		}
+	}
+	dropped := DeprecationWarning{Message: "recon: 2 reload events were dropped because the Events channel was full"}
+	if s := dropped.String(); s != dropped.Message {
+		t.Errorf("path-less String()=%q, want the message", s)
 	}
 }

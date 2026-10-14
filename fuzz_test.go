@@ -2,13 +2,14 @@ package recon
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
 
-// FuzzParsePath is the §8.6 fuzz target for [ParsePath]. The
+// FuzzParsePath fuzzes [ParsePath]. The
 // invariant: ParsePath never returns an error and never panics for
-// any byte sequence. Additionally, an empty input yields an empty
+// any byte sequence, and [Path.String] round-trips through it. Additionally, an empty input yields an empty
 // path, and a single delimiter character only yields exactly two
 // empty segments.
 func FuzzParsePath(f *testing.F) {
@@ -33,8 +34,17 @@ func FuzzParsePath(f *testing.F) {
 	f.Fuzz(func(t *testing.T, s string) {
 		// Should never panic.
 		p := ParsePath(s)
-		// Stringify should not panic either.
-		_ = p.String()
+		// String and ParsePath round-trip the parsed path.
+		if back := ParsePath(p.String()); !back.Equal(p) {
+			t.Fatalf("ParsePath(%q) = %q; its String %q parses to %q", s, []string(p), p.String(), []string(back))
+		}
+		// Any segments, split from s on NUL, round-trip as well.
+		if s != "" {
+			segs := MakePath(strings.Split(s, "\x00")...)
+			if back := ParsePath(segs.String()); !back.Equal(segs) {
+				t.Fatalf("segments %q -> %q -> %q", []string(segs), segs.String(), []string(back))
+			}
+		}
 
 		// Empty input always returns an empty path.
 		if s == "" && len(p) != 0 {
@@ -122,6 +132,7 @@ func FuzzBind(f *testing.F) {
 		Timeout time.Duration `recon:"timeout"`
 		Rate    float64       `recon:"rate"`
 		Tags    []string      `recon:"tags"`
+		Tree    selfMap       `recon:"tree"`
 	}
 
 	f.Fuzz(func(t *testing.T, key, val string) {

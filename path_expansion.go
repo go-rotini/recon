@@ -145,14 +145,21 @@ func evalBraced(expr string) (string, error) {
 	}
 }
 
-// findShellOp returns the index and operator of the first POSIX
-// modifier in expr. Longer operators are checked first so `:-` is
-// not matched as `-`.
+// findShellOp returns the index and operator of the POSIX modifier
+// that follows the variable name at the start of expr, so in
+// `${A-x:-y}` the operator is `-` and the word is `x:-y`. It returns
+// -1 when expr does not start with a name followed by a modifier.
 func findShellOp(expr string) (int, string) {
-	ops := []string{":-", ":+", ":?", "-", "+"}
-	for _, op := range ops {
-		if idx := strings.Index(expr, op); idx >= 0 {
-			return idx, op
+	if expr == "" || !isVarFirstByte(expr[0]) {
+		return -1, ""
+	}
+	end := 1
+	for end < len(expr) && isVarByte(expr[end]) {
+		end++
+	}
+	for _, op := range []string{":-", ":+", ":?", "-", "+"} {
+		if strings.HasPrefix(expr[end:], op) {
+			return end, op
 		}
 	}
 	return -1, ""

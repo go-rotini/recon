@@ -2,7 +2,6 @@ package recon
 
 import (
 	"fmt"
-	"slices"
 )
 
 // FlagAdapter is the seam between recon and a command-line-flag
@@ -11,9 +10,9 @@ import (
 // caller's side.
 //
 // An adapter must distinguish flags the user explicitly set from
-// those still holding compile-time defaults. Flags occupy the
-// second-highest precedence layer, so reporting an unset flag would
-// shadow lower-precedence sources unconditionally.
+// those still holding compile-time defaults. A flag source usually
+// sits first in the precedence order, so reporting an unset flag would
+// shadow every lower-precedence source.
 type FlagAdapter interface {
 	// Names returns the names of flags the user explicitly set, in
 	// any order. The returned slice may alias the adapter's storage;
@@ -25,9 +24,11 @@ type FlagAdapter interface {
 	Lookup(name string) (value any, set bool)
 }
 
-// FlagSource is a [Source] backed by a [FlagAdapter]. Pair with
-// [WithFlagPathTransform] to map flag names like "--server-port" onto
-// recon paths like "server.port".
+// FlagSource is a [Source] backed by a [FlagAdapter]. By default a
+// flag name, minus any leading "-" or "--", is parsed as a dotted path,
+// so "server.port" maps to Path{"server", "port"} and "server-port" to
+// a single segment. Pair with [WithFlagPathTransform] to map names like
+// "server-port" onto "server.port".
 type FlagSource struct {
 	adapter   FlagAdapter
 	name      string
@@ -60,16 +61,16 @@ func NewFlagSource(adapter FlagAdapter, opts ...FlagOption) (*FlagSource, error)
 func (s *FlagSource) Name() string { return s.name }
 
 // Get matches path against the post-transform Path of each flag the
-// adapter reports as set. Never returns an error.
+// adapter reports as set; the first such flag the adapter reports as
+// set by the user supplies the value. Never returns an error.
 func (s *FlagSource) Get(path Path) (Value, bool, error) {
-	target := path.String()
 	for _, name := range s.adapter.Names() {
-		if s.transform(name).String() != target {
+		if !s.transform(name).Equal(path) {
 			continue
 		}
 		raw, set := s.adapter.Lookup(name)
 		if !set {
-			return Value{}, false, nil
+			continue
 		}
 		return NewValue(raw), true, nil
 	}
@@ -84,16 +85,7 @@ func (s *FlagSource) Keys() []Path {
 	for _, name := range names {
 		out = append(out, s.transform(name))
 	}
-	slices.SortFunc(out, func(a, b Path) int {
-		switch {
-		case a.String() < b.String():
-			return -1
-		case a.String() > b.String():
-			return 1
-		default:
-			return 0
-		}
-	})
+	sortPaths(out)
 	return out
 }
 

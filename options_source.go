@@ -36,6 +36,9 @@ type (
 		format        string
 		pathExpansion bool
 		optional      bool
+		name          string
+		envKeys       bool
+		envPrefix     string
 		// pathExpansionSet records whether the caller invoked
 		// [WithPathExpansion] so the default-on stays applied only
 		// when the caller stayed silent.
@@ -84,9 +87,11 @@ func WithFileWatcher(w WatcherFactory) FileOption {
 	return func(o *fileOptions) { o.watcher = w }
 }
 
-// WithSearchPaths makes [FileSource] look for the filename in each
+// WithSearchPaths makes [NewFileSource] look for the filename in each
 // directory in order; first existing file wins. The constructor's
-// primary path argument supplies the filename.
+// path argument supplies the filename (its directory is ignored). When
+// no directory has the file, the first candidate is used.
+// [NewFileSourceFS] ignores this option.
 func WithSearchPaths(dirs ...string) FileOption {
 	return func(o *fileOptions) { o.searchPaths = append(o.searchPaths, dirs...) }
 }
@@ -110,6 +115,29 @@ func WithOptional(optional bool) FileOption {
 // [WithFileCodec] but useful when the codec value is not in scope.
 func WithFileFormat(name string) FileOption {
 	return func(o *fileOptions) { o.format = name }
+}
+
+// WithFileName sets the source's name, which by default is the file's
+// base name. Two files with the same base name (/etc/app/config.yaml
+// and ~/.config/app/config.yaml) need distinct names to share a
+// registry. [NewFileSourceFS] takes its name as an argument and ignores
+// this option.
+func WithFileName(name string) FileOption {
+	return func(o *fileOptions) { o.name = name }
+}
+
+// WithFileEnvKeys reads the file's top-level keys as environment
+// variable names, the way an [OSEnvSource] with [WithEnvPrefix](prefix)
+// reads the environment: the path server.port is looked up as
+// <prefix>SERVER_PORT. Names match exactly, on every platform, so keys
+// without the prefix or not in upper case are ignored. Use it with
+// [NewDotenvSource] so a `.env` file can override the same keys as the
+// environment and structured config files.
+func WithFileEnvKeys(prefix string) FileOption {
+	return func(o *fileOptions) {
+		o.envKeys = true
+		o.envPrefix = prefix
+	}
 }
 
 // WithBufferCodec pins the codec for [NewBufferSource].
@@ -141,9 +169,9 @@ func WithEnvTransform(fn KeyTransform) EnvOption {
 }
 
 // WithEnvKeyParser overrides the env-var-name → [Path] projection
-// used by [OSEnvSource.Keys]. The parser receives the name with any
-// configured prefix already stripped; returning an empty Path skips
-// the variable. Nil is silently ignored.
+// used by [OSEnvSource.Keys]. The parser receives the full variable
+// name, including any [WithEnvPrefix] prefix; returning an empty Path
+// skips the variable. Nil is ignored.
 func WithEnvKeyParser(fn func(name string) Path) EnvOption {
 	return func(o *envOptions) {
 		if fn != nil {
@@ -210,7 +238,8 @@ func WithRemotePollInterval(d time.Duration) RemoteOption {
 }
 
 // WithRemoteTrimPrefix strips the configured prefix from cached keys
-// before they're exposed.
+// before they're exposed. The prefix then names a directory: one
+// without a trailing "/" gets it, so "app" reads app/db/host as db.host.
 func WithRemoteTrimPrefix(trim bool) RemoteOption {
 	return func(o *remoteOptions) { o.trimPrefix = trim }
 }

@@ -274,7 +274,7 @@ func ExampleJSONSchemaValidator() {
 
 // ExampleFlagAdapter demonstrates implementing the FlagAdapter
 // interface against a tiny argv-parser shim. Real callers wrap
-// their library of choice — stdlib flag, pflag, kong, rotini —
+// their flag parser of choice — the standard flag package, rotini —
 // in this same shape.
 func ExampleFlagAdapter() {
 	parsed := exampleFlags{set: map[string]any{"port": 9000}}

@@ -3,6 +3,7 @@ package recon
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,7 +16,10 @@ import (
 //
 // Construct via [NewLive]; close via [Live.Close] when done. Live
 // spawns one goroutine that consumes [Registry.Events] until Close
-// or until the parent's channel closes.
+// or until the parent's channel closes. That goroutine rebinds on each
+// event and forwards it to [Live.Events] without blocking: when the
+// one-slot buffer is full the event is dropped, rebinding continues,
+// and the next delivered event carries a warning counting the drops.
 type Live[T any] struct {
 	reg     *Registry
 	decode  func() (*T, error)
@@ -24,6 +28,9 @@ type Live[T any] struct {
 	stop    chan struct{}
 	stopped atomic.Bool
 	once    sync.Once
+	// dropped counts events Live.Events could not absorb; the next
+	// delivered event reports them as a warning.
+	dropped atomic.Int64
 	// lastErr captures the most recent rebind failure; successful
 	// rebinds clear it.
 	lastErr atomic.Pointer[error]
@@ -31,9 +38,10 @@ type Live[T any] struct {
 
 // NewLive constructs a [Live] for T against reg. The initial bind
 // runs synchronously; failure returns the error and no goroutine is
-// spawned. After that, Live subscribes to reg.Events() and re-binds
-// on each reload. opts is forwarded verbatim to every [Registry.Bind]
-// call.
+// spawned. After that, Live reads reg.Events() and re-binds after
+// each successful reload. opts is forwarded verbatim to every
+// [Registry.Bind] call. Live becomes the consumer of reg.Events(), so
+// other readers of that channel compete with it for events.
 //
 // A registry that could never deliver a reload is refused with
 // [ErrNotWatched]: one built [WithoutWatch], or one holding a
@@ -80,15 +88,17 @@ func (l *Live[T]) Get() *T {
 	return l.curr.Load()
 }
 
-// Events returns a buffered channel of every reload [Event] Live
-// observed. Use it to surface reload failures alongside the live
-// state. Closed by [Close] or when the parent's Events channel
-// closes.
+// Events returns the channel of every reload [Event] Live observed,
+// with Err set when the rebind failed, Warnings including the
+// deprecations the rebind raised, and Time set to when Live handled
+// it. It has a one-slot buffer; events that arrive while it is full are
+// dropped and counted in a warning on the next delivered event (see
+// [Live]). Closed by [Live.Close] or when the parent's
+// Events channel closes.
 func (l *Live[T]) Events() <-chan Event { return l.events }
 
-// LastError returns the most recent rebind error, or nil if the
-// most recent reload succeeded. Useful for health-check endpoints
-// that want a single "is my config currently broken?" boolean.
+// LastError returns the error of the most recent reload or rebind, or
+// nil if it succeeded. Useful for health checks.
 func (l *Live[T]) LastError() error {
 	p := l.lastErr.Load()
 	if p == nil {
@@ -134,13 +144,36 @@ func (l *Live[T]) handle(evt Event) {
 			l.curr.Store(next)
 			l.recordErr(nil)
 		}
+		// Deprecations the rebind just queued belong to this event.
+		out.Warnings = appendNewWarnings(slices.Clip(out.Warnings), l.reg.DrainWarnings())
 	} else {
 		l.recordErr(evt.Err)
 	}
 	out.Time = time.Now()
+	l.emit(out)
+}
+
+// emit delivers evt without blocking. A full channel drops evt; the
+// drop count rides on the next event that gets through, as a
+// [DeprecationWarning] with an empty Path (matching [Registry.Events]).
+func (l *Live[T]) emit(evt Event) {
+	if dropped := l.dropped.Load(); dropped > 0 {
+		noun := "events were"
+		if dropped == 1 {
+			noun = "event was"
+		}
+		evt.Warnings = append(slices.Clip(evt.Warnings), DeprecationWarning{
+			Path: Path{},
+			Message: fmt.Sprintf(
+				"recon: %d reload %s dropped because the Live Events channel was full",
+				dropped, noun),
+		})
+	}
 	select {
-	case l.events <- out:
-	case <-l.stop:
+	case l.events <- evt:
+		l.dropped.Store(0)
+	default:
+		l.dropped.Add(1)
 	}
 }
 
@@ -152,11 +185,12 @@ func (l *Live[T]) recordErr(err error) {
 	l.lastErr.Store(&err)
 }
 
-// Reload forces a rebind off-cycle, bypassing the registry's reload
-// engine. Useful in tests that need deterministic timing. The Events
-// channel does not receive an entry for an off-cycle Reload.
+// Reload re-binds T from the registry's current snapshot now, without
+// rebuilding the snapshot or waiting for an event. Useful in tests
+// that need deterministic timing. [Live.Events] receives nothing for
+// it. ctx is not used.
 func (l *Live[T]) Reload(ctx context.Context) error {
-	_ = ctx // reserved for ctx-aware Bind in a future version
+	_ = ctx // unused: the rebind takes no context
 	next, err := l.decode()
 	if err != nil {
 		l.recordErr(err)
@@ -184,4 +218,18 @@ func (r *Registry) checkWatched() error {
 		}
 	}
 	return nil
+}
+
+// appendNewWarnings appends each warning in add that dst does not
+// already hold.
+func appendNewWarnings(dst, add []DeprecationWarning) []DeprecationWarning {
+	for _, w := range add {
+		if !slices.ContainsFunc(dst, func(d DeprecationWarning) bool {
+			return d.Source == w.Source && d.Message == w.Message &&
+				d.Path.Equal(w.Path) && d.Replacement.Equal(w.Replacement)
+		}) {
+			dst = append(dst, w)
+		}
+	}
+	return dst
 }

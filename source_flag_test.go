@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// fakeFlagAdapter is the synthetic [FlagAdapter] every Phase 7 test
-// drives. It models the distinction every real adapter must surface:
+// fakeFlagAdapter is the synthetic [FlagAdapter] the flag-source tests
+// drive. It models the distinction every real adapter must surface:
 // `set` keys came from the command line; the rest are defaults the
 // parser holds but did NOT observe being passed.
 type fakeFlagAdapter struct {

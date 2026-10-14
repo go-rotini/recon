@@ -3,7 +3,8 @@ package recon
 import "time"
 
 // Event is delivered on the channel returned by [Registry.Events].
-// One Event corresponds to one reload attempt — successful or failed.
+// One Event corresponds to one watch-driven reload attempt, successful
+// or failed, or to a refresh error a source reported.
 //
 // On success Err is nil and Changed lists the paths whose resolved value
 // differs from the previous snapshot. On failure Err is set, Changed is
@@ -13,7 +14,8 @@ type Event struct {
 	Time time.Time
 
 	// Source is the name of the source whose change triggered the
-	// reload. Empty for manual reloads via [Registry.Reload].
+	// reload (the last one, when several changed within the debounce
+	// window), or "poll" for a [WithPoll] tick.
 	Source string
 
 	// Changed lists paths whose resolved value differs from the previous

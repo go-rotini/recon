@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// TestRace_ConcurrentGetSetReload runs §8.8's primary stress
+// TestRace_ConcurrentGetSetReload runs the primary stress
 // scenario: N goroutines Get-ing concurrently while M goroutines
 // Set and Reload. The test passes when no race detector report,
 // no deadlock, no panic, and the registry is still usable at the
@@ -83,7 +83,7 @@ func TestRace_ConcurrentGetSetReload(t *testing.T) {
 	}
 }
 
-// TestRace_WatcherFloodWithReaders is the §8.8 watcher-stress
+// TestRace_WatcherFloodWithReaders is the watcher-stress
 // variant: a watcher fires reload events as fast as it can while
 // 16 readers do `Get` in a tight loop. The reload-engine debounce
 // keeps the work bounded; the readers must never observe a
@@ -141,7 +141,7 @@ func TestRace_WatcherFloodWithReaders(t *testing.T) {
 	<-done
 }
 
-// TestRace_LiveGetConcurrentReload exercises §8.8's Live[T]
+// TestRace_LiveGetConcurrentReload exercises the Live[T]
 // scenario: N concurrent [Live.Get] calls against a Live that's
 // being rebound by a stream of source-change events.
 //

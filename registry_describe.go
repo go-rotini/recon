@@ -35,16 +35,18 @@ type KeyDescription struct {
 	// Aliases lists every alias path that resolves to this key.
 	Aliases []Path
 
-	// Schema carries a per-key schema fragment when the registered
-	// validator exposes one. Empty for the bundled JSON Schema
-	// validator.
+	// Schema is always empty.
+	//
+	// Deprecated: a [SchemaValidator] does not expose its schema, so
+	// Describe has nothing to fill it with. Read the schema from where
+	// the validator was built.
 	Schema string
 }
 
-// Describe returns a [Description] of the current snapshot. The
-// result reflects the call instant; callers wanting a consistent
-// view across multiple calls should pin via [Registry.Snapshot] and
-// walk it themselves.
+// Describe returns a [Description] of the whole current snapshot, even
+// on a [Registry.Sub] view. Callers wanting a consistent view across
+// multiple calls should pin via [Registry.Snapshot] and walk it
+// themselves.
 func (r *Registry) Describe() Description {
 	if r.state.closed.Load() {
 		return Description{}
@@ -54,7 +56,7 @@ func (r *Registry) Describe() Description {
 		return Description{}
 	}
 	r.state.mu.Lock()
-	secrets := cloneStringSet(r.state.secretKeys)
+	secrets := r.secretMatcherLocked()
 	redactor := r.state.opts.secretRedactor
 	aliasByCanon := r.invertAliasesLocked()
 	r.state.mu.Unlock()
@@ -72,7 +74,7 @@ func (r *Registry) Describe() Description {
 	out := Description{Keys: make([]KeyDescription, 0, len(canonicalKeys))}
 	for _, ks := range canonicalKeys {
 		v := snap.values[ks]
-		_, secret := secrets[ks]
+		secret := secrets.has(ks)
 		display := v.String()
 		if secret && redactor != nil {
 			display = redactor(display)
@@ -94,7 +96,7 @@ func (r *Registry) Describe() Description {
 	return out
 }
 
-// DescribeKey is the per-key form of [Describe]. Alias keys resolve
+// DescribeKey is the per-key form of [Registry.Describe]. Alias keys resolve
 // to their canonical row, so DescribeKey("port") and
 // DescribeKey("server.port") return the same row when port is
 // aliased.
@@ -109,7 +111,7 @@ func (r *Registry) DescribeKey(key string) (KeyDescription, bool) {
 	fullKey := r.fullKey(key)
 	r.state.mu.Lock()
 	canon := resolveAliasChain(fullKey, r.state.aliases)
-	secrets := cloneStringSet(r.state.secretKeys)
+	secrets := r.secretMatcherLocked()
 	redactor := r.state.opts.secretRedactor
 	aliasByCanon := r.invertAliasesLocked()
 	r.state.mu.Unlock()
@@ -118,7 +120,7 @@ func (r *Registry) DescribeKey(key string) (KeyDescription, bool) {
 	if !ok {
 		return KeyDescription{}, false
 	}
-	_, secret := secrets[canon]
+	secret := secrets.has(canon)
 	display := v.String()
 	if secret && redactor != nil {
 		display = redactor(display)
@@ -138,11 +140,13 @@ func (r *Registry) DescribeKey(key string) (KeyDescription, bool) {
 	}, true
 }
 
-// MarkSecret records key as containing sensitive data and rebuilds
-// the snapshot so [Describe] / [Save] / [Snapshot.String] see the
-// updated set immediately. Empty key and closed registry are silent
-// no-ops; idempotent. A rebuild failure is logged but not returned —
-// the typical caller is the bind walker emitting a side effect.
+// MarkSecret records key as containing sensitive data, in the registry
+// and in its current snapshot, so [Registry.Describe], [Registry.Save],
+// [Snapshot.String] and bind and validation errors redact it
+// immediately; a [*Snapshot] obtained earlier keeps its own secret set.
+// Every key below key is covered too, and so are the key an alias
+// resolves to and the aliases of a marked key. An empty key or a closed
+// registry is a no-op; repeated calls are harmless.
 func (r *Registry) MarkSecret(key string) {
 	if key == "" {
 		return
@@ -150,22 +154,40 @@ func (r *Registry) MarkSecret(key string) {
 	if r.state.closed.Load() {
 		return
 	}
-	fullKey := r.fullKey(key)
+	r.markSecrets([]string{r.fullKey(key)})
+}
+
+// markSecrets adds the full keys to the secret set and, when the set
+// grew, swaps in a copy of the current snapshot carrying it. The values
+// are unchanged, so nothing is re-read or re-validated.
+func (r *Registry) markSecrets(keys []string) {
+	if len(keys) == 0 || r.state.closed.Load() {
+		return
+	}
 	r.state.mu.Lock()
-	if r.state.secretKeys == nil {
-		r.state.secretKeys = map[string]struct{}{}
+	added := 0
+	for _, k := range keys {
+		if _, ok := r.state.secretKeys[k]; ok {
+			continue
+		}
+		if r.state.secretKeys == nil {
+			r.state.secretKeys = map[string]struct{}{}
+		}
+		r.state.secretKeys[k] = struct{}{}
+		added++
 	}
-	r.state.secretKeys[fullKey] = struct{}{}
-	rebuildErr := r.rebuildSnapshotLocked()
+	if cur := r.state.snapshot.Load(); cur != nil && added > 0 {
+		next := *cur
+		next.secretKeys = cloneStringSet(r.state.secretKeys)
+		next.redactor = r.state.opts.secretRedactor
+		r.state.snapshot.Store(&next)
+	}
 	r.state.mu.Unlock()
-	if rebuildErr != nil {
-		r.state.logger.Warn("recon: MarkSecret rebuild rejected",
-			"key", fullKey, "err", rebuildErr)
-	}
 }
 
 // IsSecret reports whether key has been marked secret, either via
-// [MarkSecret] or by the bind walker on a `secret`-tagged field.
+// [Registry.MarkSecret] or by a bind of a `secret`-tagged field or a
+// [Secret] field, directly or through a parent key or an alias.
 func (r *Registry) IsSecret(key string) bool {
 	if r.state.closed.Load() {
 		return false
@@ -173,8 +195,7 @@ func (r *Registry) IsSecret(key string) bool {
 	fullKey := r.fullKey(key)
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
-	_, ok := r.state.secretKeys[fullKey]
-	return ok
+	return secretMatcher{keys: r.state.secretKeys, aliases: r.state.aliases}.has(fullKey)
 }
 
 // invertAliasesLocked rebuilds the canonical → []alias map from the
@@ -190,16 +211,7 @@ func (r *Registry) invertAliasesLocked() map[string][]Path {
 		out[final] = append(out[final], ParsePath(alias))
 	}
 	for _, list := range out {
-		slices.SortFunc(list, func(a, b Path) int {
-			switch {
-			case a.String() < b.String():
-				return -1
-			case a.String() > b.String():
-				return 1
-			default:
-				return 0
-			}
-		})
+		sortPaths(list)
 	}
 	return out
 }

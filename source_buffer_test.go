@@ -52,9 +52,22 @@ func TestNewBufferSource_DecodesViaCodec(t *testing.T) {
 }
 
 func TestNewBufferSource_MissingCodec(t *testing.T) {
-	_, err := NewBufferSource("buf", "json", []byte(`{}`))
+	_, err := NewBufferSource("buf", "nope", []byte(`{}`))
 	if !errors.Is(err, ErrUnsupportedFormat) {
 		t.Fatalf("err=%v, want wrap of ErrUnsupportedFormat", err)
+	}
+}
+
+// The format argument picks the codec when none is supplied, and a
+// leading byte-order mark is ignored as other sources do.
+func TestNewBufferSource_FormatAndBOM(t *testing.T) {
+	src, err := NewBufferSource("local", "dotenv", []byte("\xEF\xBB\xBFPORT=1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, ok, _ := src.Get(Path{"PORT"})
+	if !ok || v.String() != "1" {
+		t.Fatalf("PORT = %q %v, want 1", v.String(), ok)
 	}
 }
 

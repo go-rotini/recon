@@ -36,7 +36,6 @@ func BenchmarkGet_String_Miss(b *testing.B) {
 }
 
 // BenchmarkBind_TypicalStruct binds a 20-field mixed-type struct.
-// Mirrors the §8.9 benchmark that's published in the README.
 func BenchmarkBind_TypicalStruct(b *testing.B) {
 	type cfg struct {
 		Port       int           `recon:"port"`

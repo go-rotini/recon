@@ -37,7 +37,7 @@ func NewConfigs() *Configs {
 // Register attaches r under name. Returns wrapped [ErrSourceConflict]
 // when the name is taken or empty, [ErrInvalidPath] when r is nil.
 //
-// If [Events] has already been called, the new registry is folded
+// If [Configs.Events] has already been called, the new registry is folded
 // into the multiplexed stream automatically.
 func (c *Configs) Register(name string, r *Registry) error {
 	if name == "" {
@@ -86,7 +86,7 @@ func (c *Configs) Names() []string {
 }
 
 // Remove unregisters and closes the named registry. Idempotent. The
-// registry's [Close] closes its Events channel, which lets any
+// registry's [Registry.Close] closes its Events channel, which lets any
 // running forwarder exit on its own.
 func (c *Configs) Remove(name string) error {
 	c.mu.Lock()
@@ -161,9 +161,9 @@ type NamedEvent struct {
 // registry's events, tagged by name. The channel is created on the
 // first call and reused on subsequent calls.
 //
-// Registries added via [Register] after Events is called are folded
-// in automatically; those removed via [Remove] or closed externally
-// have their forwarder shut down. Closed by [Close]. Returns nil on
+// Registries added via [Configs.Register] after Events is called are folded
+// in automatically; those removed via [Configs.Remove] or closed externally
+// have their forwarder shut down. Closed by [Configs.Close]. Returns nil on
 // a closed Configs.
 func (c *Configs) Events() <-chan NamedEvent {
 	c.mu.Lock()

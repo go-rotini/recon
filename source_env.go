@@ -2,6 +2,7 @@ package recon
 
 import (
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -16,12 +17,22 @@ import (
 //
 // Values surface as [StringKind]; typed coercion happens at the
 // [Registry] level. Use [WithEnvTransform] for a non-default forward
-// projection and [WithEnvKeyParser] for the inverse used by [Keys].
+// projection and [WithEnvKeyParser] for the inverse used by
+// [OSEnvSource.Keys].
+//
+// Without [WithEnvPrefix], [WithEnvVars] or [WithEnvKeyParser] the
+// source reports every variable in the environment (PATH, HOME, tokens),
+// so give it a prefix. [Registry.Save] leaves such a source's keys out
+// unless a bind read them.
 type OSEnvSource struct {
 	prefix    string
 	transform KeyTransform
 	parse     func(name string) Path
 	src       env.Source
+
+	// scoped is false when the source reads every environment variable:
+	// no prefix, explicit variables or key parser was given.
+	scoped bool
 
 	mu     sync.RWMutex
 	keys   []Path
@@ -71,6 +82,7 @@ func NewOSEnvSource(opts ...EnvOption) *OSEnvSource {
 		transform: transform,
 		parse:     parser,
 		src:       env.OSEnv(),
+		scoped:    cfg.prefix != "" || len(cfg.vars) > 0 || cfg.parser != nil,
 	}
 }
 
@@ -95,10 +107,12 @@ func (s *OSEnvSource) Get(path Path) (Value, bool, error) {
 }
 
 // Keys enumerates paths cached from os.Environ. The first call scans
-// the environment; later calls return the cached set until [Refresh].
+// the environment; later calls return the cached set until
+// [OSEnvSource.Refresh]. Get always reads the live environment.
 //
 // The default snake-upper inverse treats every underscore as a
-// separator, so APP_OAUTH2_TOKEN surfaces as Path{"oauth2","token"}.
+// separator, so with prefix "APP_" the variable APP_OAUTH2_TOKEN
+// surfaces as Path{"oauth2","token"}.
 // Supply [WithEnvKeyParser] when a different convention preserves
 // segment boundaries.
 func (s *OSEnvSource) Keys() []Path {
@@ -124,8 +138,7 @@ func (s *OSEnvSource) Keys() []Path {
 func (s *OSEnvSource) Close() error { return nil }
 
 // Refresh re-scans os.Environ to pick up additions or deletions and
-// returns the new key count. Driven by the watch engine's [WithPoll]
-// when live env coverage is wanted.
+// returns the new key count. [WithPoll] calls it on every tick.
 func (s *OSEnvSource) Refresh() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -151,7 +164,7 @@ func (s *OSEnvSource) collectKeys() []Path {
 			continue
 		}
 		name := kv[:eq]
-		if s.prefix != "" && !strings.HasPrefix(name, s.prefix) {
+		if s.prefix != "" && !hasEnvPrefix(name, s.prefix) {
 			continue
 		}
 		p := s.parse(name)
@@ -166,4 +179,20 @@ func (s *OSEnvSource) collectKeys() []Path {
 		out[i] = k.path
 	}
 	return out
+}
+
+// nativeKey returns the environment variable name path is read from.
+func (s *OSEnvSource) nativeKey(path Path) string { return s.transform(path) }
+
+// envNamesFoldCase reports whether environment variable names are
+// case-insensitive, as on Windows.
+var envNamesFoldCase = runtime.GOOS == "windows"
+
+// hasEnvPrefix reports whether the variable name starts with prefix,
+// ignoring case where variable names are case-insensitive.
+func hasEnvPrefix(name, prefix string) bool {
+	if envNamesFoldCase {
+		return len(name) >= len(prefix) && strings.EqualFold(name[:len(prefix)], prefix)
+	}
+	return strings.HasPrefix(name, prefix)
 }

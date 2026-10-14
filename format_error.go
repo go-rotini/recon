@@ -80,11 +80,18 @@ func formatOneError(reg *Registry, err error) string {
 	case errors.As(err, &coer):
 		msg := fmt.Sprintf("coerce %s → %s", coer.WireType, coer.Target)
 		if coer.Cause != nil {
-			msg += ": " + coer.Cause.Error()
+			if coer.Secret {
+				msg += ": [redacted]"
+			} else {
+				msg += ": " + coer.Cause.Error()
+			}
 		}
 		return formatPathErr(reg, coer.Path, msg, coer.Source)
 	case errors.As(err, &valid):
 		msg := valid.Msg
+		if valid.Secret {
+			msg = "[redacted]"
+		}
 		if valid.Rule != "" {
 			msg = "[" + valid.Rule + "] " + msg
 		}

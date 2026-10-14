@@ -2,6 +2,7 @@ package recon
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -276,5 +277,45 @@ func TestLive_DecodeOptionsPropagate(t *testing.T) {
 	t.Cleanup(func() { _ = live.Close() })
 	if live.Get().N != 42 {
 		t.Fatalf("N=%d, want 42 (custom decoder did not run)", live.Get().N)
+	}
+}
+
+func TestLive_UndrainedEventsDoNotStallRebind(t *testing.T) {
+	src := newWatchableSource("s", map[string]any{"port": 0, "name": "x"})
+	r := newRegistry(t,
+		WithSource(src),
+		WithReloadDebounce(5*time.Millisecond),
+	)
+	live, err := NewLive[liveConfig](r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = live.Close() })
+
+	for i := 1; i <= 5; i++ {
+		src.Trigger(map[string]any{"port": i, "name": "x"})
+		deadline := time.Now().Add(2 * time.Second)
+		for live.Get().Port != i {
+			if time.Now().After(deadline) {
+				t.Fatalf("reload %d: Port=%d, rebind stalled", i, live.Get().Port)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	evt := awaitEvent(t, live.Events(), time.Second)
+	if evt.Err != nil {
+		t.Fatalf("evt.Err=%v", evt.Err)
+	}
+	src.Trigger(map[string]any{"port": 6, "name": "x"})
+	evt = awaitEvent(t, live.Events(), 2*time.Second)
+	found := false
+	for _, w := range evt.Warnings {
+		if len(w.Path) == 0 && strings.Contains(w.Message, "dropped") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want dropped-event warning, got %+v", evt.Warnings)
 	}
 }

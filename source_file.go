@@ -2,13 +2,14 @@ package recon
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // FileSource is a codec-driven [Source] backed by a single file on
@@ -19,9 +20,9 @@ import (
 // / [WithOptional] to express "look in N directories, expand ~, treat
 // missing as no-op" in one constructor.
 //
-// FileSource implements [Watcher] when a [WatcherFactory] is
-// available — either set per-source via [WithFileWatcher] or injected
-// by the registry from [WithWatcher].
+// FileSource is watched when a [WatcherFactory] is available, either
+// set per-source via [WithFileWatcher] or injected by the registry from
+// [WithWatcher].
 type FileSource struct {
 	*MapSource
 
@@ -46,8 +47,15 @@ type FileSource struct {
 	// parseErr builds the error for a decode failure.
 	parseErr parseErrorFunc
 
-	// reload serializes Reload calls.
+	// reload serializes Reload calls and guards stamp and watcher.
 	reload sync.Mutex
+
+	// stamp describes the file as it was before the last read.
+	stamp fileStamp
+
+	// decoded reports whether the last read decoded a document: the
+	// file was present and not empty. Guarded by reload.
+	decoded bool
 }
 
 // NewFileSource constructs a [FileSource] for path. Codec resolution
@@ -57,7 +65,8 @@ type FileSource struct {
 // [*ParseError] with the resolved path and, when the parser reports
 // one, the line and column.
 //
-// The source's Name is the basename of the resolved path.
+// The source's Name is the basename of the resolved path, unless
+// [WithFileName] sets one.
 func NewFileSource(path string, opts ...FileOption) (Source, error) {
 	return newFileSource(DefaultCodecs(), newParseError, path, opts)
 }
@@ -87,8 +96,11 @@ func newFileSource(codecs *Codecs, parseErr parseErrorFunc, path string, opts []
 		return nil, err
 	}
 
-	name := filepath.Base(resolved)
-	data, missing, err := readFileMaybeOptional(resolved, cfg.optional)
+	name := cfg.name
+	if name == "" {
+		name = filepath.Base(resolved)
+	}
+	data, stamp, missing, err := readFileMaybeOptional(resolved, cfg.optional)
 	if err != nil {
 		return nil, err
 	}
@@ -102,12 +114,14 @@ func newFileSource(codecs *Codecs, parseErr parseErrorFunc, path string, opts []
 	}
 
 	src := &FileSource{
-		MapSource:    NewMapSource(name, decoded),
+		MapSource:    newFileMapSource(name, decoded, freshDecoder(codec), cfg),
 		resolvedPath: resolved,
 		codec:        codec,
 		optional:     cfg.optional,
 		watcher:      cfg.watcher,
 		parseErr:     parseErr,
+		stamp:        stamp,
+		decoded:      !missing && len(data) > 0,
 	}
 	if missing {
 		src.missing.Store(true)
@@ -117,6 +131,20 @@ func newFileSource(codecs *Codecs, parseErr parseErrorFunc, path string, opts []
 
 // Path returns the absolute, expanded path the source reads from.
 func (s *FileSource) Path() string { return s.resolvedPath }
+
+// Document returns a copy of the document the file held when it was
+// last read, and true; or nil and false when nothing was decoded
+// because the file was missing or empty.
+func (s *FileSource) Document() (map[string]any, bool) {
+	s.reload.Lock()
+	defer s.reload.Unlock()
+	if !s.decoded {
+		return nil, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return deepCopyMap(s.data), true
+}
 
 // Format returns the canonical codec name driving this source's
 // decode.
@@ -129,18 +157,22 @@ func (s *FileSource) Format() string {
 
 // Reload re-reads the file and atomically swaps the underlying map.
 // On a missing-file outcome with [WithOptional], the source is emptied
-// without error. Decode failures retain the existing contents.
+// without error. Decode failures retain the existing contents. Reload
+// does not rebuild the registry's snapshot: a watched source's reload
+// does, otherwise call [Registry.Reload] afterwards.
 func (s *FileSource) Reload() error {
 	s.reload.Lock()
 	defer s.reload.Unlock()
 
-	data, missing, err := readFileMaybeOptional(s.resolvedPath, s.optional)
+	data, stamp, missing, err := readFileMaybeOptional(s.resolvedPath, s.optional)
 	if err != nil {
 		return err
 	}
+	s.stamp = stamp
 	s.missing.Store(missing)
 	if missing {
-		s.Replace(map[string]any{})
+		s.decoded = false
+		s.replaceOwned(map[string]any{})
 		return nil
 	}
 	data = stripBOM(data)
@@ -148,16 +180,22 @@ func (s *FileSource) Reload() error {
 	if err != nil {
 		return s.parseErr(s.Name(), s.resolvedPath, data, err)
 	}
-	s.Replace(decoded)
+	s.decoded = len(data) > 0
+	if freshDecoder(s.codec) {
+		s.replaceOwned(decoded)
+	} else {
+		s.Replace(decoded)
+	}
 	return nil
 }
 
-// Watch returns a [SourceChange] channel for the underlying file. A
-// nil factory yields a closed channel so the optional-watch contract
-// on [Source] stays satisfiable.
+// Watch implements [Watcher] for the underlying file. Without a
+// [WatcherFactory] it returns a closed channel.
 //
-// Each upstream notification triggers a [Reload], then forwards a
-// [SourceChange] downstream.
+// Each upstream notification triggers a [FileSource.Reload], then
+// forwards a [SourceChange] carrying any reload error. A write between
+// the last read and the start of the subscription is picked up as one
+// such change when Watch starts.
 func (s *FileSource) Watch(ctx context.Context) (<-chan SourceChange, error) {
 	factory := s.watcherFactory()
 	if factory == nil {
@@ -181,9 +219,9 @@ func (s *FileSource) watcherFactory() WatcherFactory {
 	return s.watcher
 }
 
-// SetWatcher attaches a [WatcherFactory] after construction. Used by
-// the registry to inject its registry-wide factory. Has no effect on a
-// running subscription.
+// SetWatcher attaches a [WatcherFactory] after construction. The
+// registry calls it to install the [WithWatcher] factory. Has no effect
+// on a running subscription.
 func (s *FileSource) SetWatcher(w WatcherFactory) {
 	s.reload.Lock()
 	defer s.reload.Unlock()
@@ -198,6 +236,15 @@ func (s *FileSource) fanWatchEvents(
 	out chan<- SourceChange,
 ) {
 	defer close(out)
+	// The watcher only reports writes after it subscribed; a write
+	// between the last read and then is caught here.
+	if s.changedSinceRead() {
+		next := SourceChange{}
+		if err := s.Reload(); err != nil {
+			next.Err = err
+		}
+		forwardChange(ctx, out, next)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -263,7 +310,7 @@ func resolveFilePath(path string, cfg fileOptions) (string, error) {
 		if firstResolved == "" {
 			firstResolved = abs
 		}
-		if fileExists(abs) {
+		if !fileMissing(abs) {
 			return abs, nil
 		}
 	}
@@ -323,21 +370,45 @@ func resolveFileCodec(path string, cfg fileOptions, codecs *Codecs) (Codec, erro
 	return c, nil
 }
 
-// readFileMaybeOptional reads path. With optional=true a missing file
-// returns (nil, true, nil); other errors surface regardless.
-func readFileMaybeOptional(path string, optional bool) (data []byte, missing bool, err error) {
-	if !fileExists(path) {
-		if optional {
-			return nil, true, nil
-		}
-		return nil, false, fmt.Errorf("recon: file %q: %w", path, fs.ErrNotExist)
-	}
-	b, err := readFileCapped(path)
+// readFileMaybeOptional reads path, stamping the file it read. With
+// optional=true a missing file returns (nil, true, nil) and an empty
+// stamp; other errors surface regardless.
+func readFileMaybeOptional(path string, optional bool) (data []byte, stamp fileStamp, missing bool, err error) {
+	b, stamp, err := readFileStamped(path)
 	if err != nil {
-		if optional && errors.Is(err, fs.ErrNotExist) {
-			return nil, true, nil
+		if isNotExist(err) {
+			if optional {
+				return nil, fileStamp{}, true, nil
+			}
+			return nil, fileStamp{}, false, fmt.Errorf("recon: file %q: %w", path, fs.ErrNotExist)
 		}
-		return nil, false, fmt.Errorf("recon: read %q: %w", path, err)
+		return nil, fileStamp{}, false, fmt.Errorf("recon: read %q: %w", path, err)
 	}
-	return b, false, nil
+	return b, stamp, false, nil
+}
+
+// fileStamp is what os.Stat reports about a file, enough to tell that
+// it was written since.
+type fileStamp struct {
+	exists bool
+	size   int64
+	mod    time.Time
+}
+
+// statFile stamps path; a missing or unreadable file has exists false.
+func statFile(path string) fileStamp {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}
+	}
+	return fileStamp{exists: true, size: info.Size(), mod: info.ModTime()}
+}
+
+// changedSinceRead reports whether the file looks different from when
+// it was last read.
+func (s *FileSource) changedSinceRead() bool {
+	s.reload.Lock()
+	defer s.reload.Unlock()
+	cur := statFile(s.resolvedPath)
+	return cur.exists != s.stamp.exists || cur.size != s.stamp.size || !cur.mod.Equal(s.stamp.mod)
 }

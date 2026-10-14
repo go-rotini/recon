@@ -11,13 +11,13 @@ import (
 )
 
 // RemoteBackend is the contract an out-of-process configuration store
-// satisfies. Real adapters (etcd, consul, vault, AWS SSM, k8s) live in
-// separate modules and depend on this interface. The core ships only
-// the interface plus [NewInMemoryBackend] for tests.
+// satisfies; wrap one with [NewRemoteSource]. Recon ships no adapter
+// for a real store, only [NewInMemoryBackend] for tests.
 //
-// Backends are string-keyed and string-valued. Adapters with
-// structured payloads should pre-serialize values and rely on the
-// `format=` bind tag for per-field re-decoding.
+// Backends are string-keyed and string-valued, with "/" separating
+// path segments in keys. Adapters with structured payloads should
+// pre-serialize values and rely on the `format=` bind tag for
+// per-field re-decoding.
 type RemoteBackend interface {
 	// List enumerates every key under prefix. An empty prefix lists
 	// every key.
@@ -40,13 +40,20 @@ type BackendWatcher interface {
 	Watch(ctx context.Context) (<-chan struct{}, error)
 }
 
+// BackendLister is the optional [RemoteBackend] capability of reading
+// every key under a prefix with its value in one call. A [RemoteSource]
+// uses it in place of List plus one Get per key.
+type BackendLister interface {
+	ListValues(ctx context.Context, prefix string) (map[string]string, error)
+}
+
 // RemoteSource wraps a [RemoteBackend] as a [Source]. Construction
 // reads every key under the configured prefix and caches the result;
 // subsequent Get calls hit the cache.
 //
-// Live reload: subscribes to [BackendWatcher] when available;
-// otherwise polls at the [WithRemotePollInterval] cadence (default
-// off — opt in by setting an interval).
+// Live reload: when the registry watches it, the source re-reads the
+// backend on each [BackendWatcher] notification, or otherwise every
+// [WithRemotePollInterval] (off by default).
 type RemoteSource struct {
 	name    string
 	backend RemoteBackend
@@ -64,6 +71,16 @@ type RemoteSource struct {
 // wrapped [*SourceError]. Returns wrapped [ErrInvalidPath] for an
 // empty name or nil backend.
 func NewRemoteSource(name string, backend RemoteBackend, opts ...RemoteOption) (*RemoteSource, error) {
+	return NewRemoteSourceContext(context.Background(), name, backend, opts...)
+}
+
+// NewRemoteSourceContext is [NewRemoteSource] with ctx passed to the
+// construction-time read, so a stalled backend can be given a deadline.
+// A nil ctx returns [ErrNilContext].
+func NewRemoteSourceContext(ctx context.Context, name string, backend RemoteBackend, opts ...RemoteOption) (*RemoteSource, error) {
+	if ctx == nil {
+		return nil, ErrNilContext
+	}
 	if name == "" {
 		return nil, fmt.Errorf("%w: NewRemoteSource: empty name", ErrInvalidPath)
 	}
@@ -74,6 +91,11 @@ func NewRemoteSource(name string, backend RemoteBackend, opts ...RemoteOption) (
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	// A trimmed prefix names a directory: "app" lists app/… (not apple/…)
+	// and app/db/host becomes db.host.
+	if cfg.trimPrefix && cfg.prefix != "" && !strings.HasSuffix(cfg.prefix, "/") {
+		cfg.prefix += "/"
+	}
 	s := &RemoteSource{
 		name:    name,
 		backend: backend,
@@ -82,7 +104,7 @@ func NewRemoteSource(name string, backend RemoteBackend, opts ...RemoteOption) (
 		trimKey: cfg.trimPrefix,
 		cache:   map[string]string{},
 	}
-	if err := s.refresh(context.Background()); err != nil {
+	if err := s.refresh(ctx); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -116,16 +138,7 @@ func (s *RemoteSource) Keys() []Path {
 	for _, k := range s.keyList {
 		out = append(out, s.keyToPath(k))
 	}
-	slices.SortFunc(out, func(a, b Path) int {
-		switch {
-		case a.String() < b.String():
-			return -1
-		case a.String() > b.String():
-			return 1
-		default:
-			return 0
-		}
-	})
+	sortPaths(out)
 	return out
 }
 
@@ -138,12 +151,16 @@ func (s *RemoteSource) Close() error {
 	return s.backend.Close()
 }
 
-// Refresh re-reads the backend, replacing the cache atomically.
+// Refresh re-reads the backend, replacing the cache atomically. It
+// does not rebuild the registry's snapshot; call [Registry.Reload]
+// afterwards. On error the cache is unchanged.
 func (s *RemoteSource) Refresh(ctx context.Context) error { return s.refresh(ctx) }
 
-// Watch implements [Watcher]. Emits a [SourceChange] on every
-// backend-reported activity. A source with neither a [BackendWatcher]
-// backend nor a configured poll interval returns a closed channel.
+// Watch implements [Watcher]. It refreshes the cache and emits a
+// [SourceChange] on every [BackendWatcher] notification, or on each
+// poll tick that finds the data changed. A source with neither a
+// [BackendWatcher] backend nor a poll interval returns a closed
+// channel.
 func (s *RemoteSource) Watch(ctx context.Context) (<-chan SourceChange, error) {
 	if bw, ok := s.backend.(BackendWatcher); ok {
 		return s.watchPush(ctx, bw)
@@ -229,20 +246,9 @@ func (s *RemoteSource) fanWatch(ctx context.Context, sub <-chan struct{}, out ch
 // refresh re-reads every key under the source's prefix and swaps the
 // cache. Returns a wrapped [*SourceError] on backend failure.
 func (s *RemoteSource) refresh(ctx context.Context) error {
-	keys, err := s.backend.List(ctx, s.prefix)
+	cache, err := s.readAll(ctx)
 	if err != nil {
-		return &SourceError{Source: s.name, Op: "list", Cause: err}
-	}
-	cache := make(map[string]string, len(keys))
-	for _, k := range keys {
-		val, ok, gerr := s.backend.Get(ctx, k)
-		if gerr != nil {
-			return &SourceError{Source: s.name, Op: "get", Cause: gerr}
-		}
-		if !ok {
-			continue
-		}
-		cache[k] = val
+		return err
 	}
 	s.mu.Lock()
 	s.cache = cache
@@ -253,6 +259,35 @@ func (s *RemoteSource) refresh(ctx context.Context) error {
 	slices.Sort(s.keyList)
 	s.mu.Unlock()
 	return nil
+}
+
+// readAll reads every key under the source's prefix with its value:
+// in one call when the backend is a [BackendLister], else one List plus
+// one Get per key.
+func (s *RemoteSource) readAll(ctx context.Context) (map[string]string, error) {
+	if bl, ok := s.backend.(BackendLister); ok {
+		kv, err := bl.ListValues(ctx, s.prefix)
+		if err != nil {
+			return nil, &SourceError{Source: s.name, Op: "list", Cause: err}
+		}
+		return cloneStringMap(kv), nil
+	}
+	keys, err := s.backend.List(ctx, s.prefix)
+	if err != nil {
+		return nil, &SourceError{Source: s.name, Op: "list", Cause: err}
+	}
+	cache := make(map[string]string, len(keys))
+	for _, k := range keys {
+		val, ok, gerr := s.backend.Get(ctx, k)
+		if gerr != nil {
+			return nil, &SourceError{Source: s.name, Op: "get", Cause: gerr}
+		}
+		if !ok {
+			continue
+		}
+		cache[k] = val
+	}
+	return cache, nil
 }
 
 // lookupKey projects path to the backend's flat key form, joining

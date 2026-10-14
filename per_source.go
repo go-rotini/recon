@@ -56,12 +56,13 @@ func (p PerSource[T]) BySource(name string) ValueSource[T] {
 
 // PerSourceFor returns the per-source view of key. Every source is
 // consulted once and the result is coerced into T using the same
-// rules [Get] follows.
+// rules [Get] follows. An alias key is first resolved to its
+// canonical path, as [Get] resolves it.
 //
 // A source without the key reports IsSet=false. A source whose value
-// cannot be coerced into T reports IsSet=true with Err set — caller-
-// side resolve logic can then distinguish "missing" from "wrong
-// shape".
+// cannot be coerced into T, or whose Get fails, reports IsSet=true
+// with Err set, so caller-side resolve logic can distinguish
+// "missing" from "wrong shape".
 //
 // Returns a wrapped [ErrRegistryClosed] on a closed registry.
 func PerSourceFor[T any](r *Registry, key string) (PerSource[T], error) {
@@ -71,22 +72,29 @@ func PerSourceFor[T any](r *Registry, key string) (PerSource[T], error) {
 	if err := r.validateNotClosed(); err != nil {
 		return PerSource[T]{}, err
 	}
-	fullKey := r.fullKey(key)
-	path := ParsePath(fullKey)
-	canon := resolveAliasChain(fullKey, r.snapshotAliases())
+	canon := resolveAliasChain(r.fullKey(key), r.snapshotAliases())
+	path := ParsePath(canon)
 
-	out := PerSource[T]{Path: ParsePath(canon)}
+	out := PerSource[T]{Path: path}
 
 	r.state.mu.Lock()
 	sources := append([]Source(nil), r.state.sources...)
-	explicitRaw, hasExplicit := r.state.explicits[canon]
-	defaultRaw, hasDefault := r.state.defaults[canon]
+	is := snapshotInputs{
+		explicits: flattenLayer(maps.Clone(r.state.explicits)),
+		defaults:  flattenLayer(maps.Clone(r.state.defaults)),
+		aliasesOf: invertAliases(r.state.aliases),
+	}
 	r.state.mu.Unlock()
+	explicitRaw, hasExplicit := layerGet(is.explicits, canon, is)
+	defaultRaw, hasDefault := layerGet(is.defaults, canon, is)
 
 	out.Sources = make([]ValueSource[T], 0, len(sources))
 	for _, src := range sources {
 		entry := ValueSource[T]{Source: src.Name()}
 		raw, ok, err := src.Get(path)
+		if err == nil && !ok {
+			raw, ok = sourceGet(src, path, canon, is)
+		}
 		if err != nil {
 			entry.IsSet = true
 			entry.Err = err

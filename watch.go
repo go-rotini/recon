@@ -12,8 +12,8 @@ import (
 
 // watchEngine fans in [Watcher]-implementing sources, debounces their
 // [SourceChange] events, rebuilds the snapshot, and emits the result on
-// the channel returned by [Registry.Events]. Started by [Registry.New]
-// and stopped by [Registry.Close].
+// the channel returned by [Registry.Events]. Started by [New] and
+// [NewWithCodecs] and stopped by [Registry.Close].
 type watchEngine struct {
 	r       *Registry
 	ctx     context.Context
@@ -24,6 +24,11 @@ type watchEngine struct {
 	// dropped counts Events the public channel could not absorb. The
 	// count is surfaced on the next deliverable event as a warning.
 	dropped atomic.Int64
+	// subs cancels each Watcher source's subscription by source name;
+	// polling records that the poll ticker runs. Both are guarded by
+	// r.state.mu.
+	subs    map[string]context.CancelFunc
+	polling bool
 }
 
 type pendingChange struct {
@@ -48,33 +53,56 @@ func newWatchEngine(r *Registry) *watchEngine {
 	}
 }
 
-// start subscribes to every [Watcher]-implementing source, kicks off
-// the optional poll ticker, and starts the debounce loop. Subscription
-// failures are logged but do not abort startup. Caller must hold
-// r.state.mu.
+// start subscribes to every registered source and starts the debounce
+// loop. Caller must hold r.state.mu.
 func (e *watchEngine) start() {
-	hasNonWatcher := false
 	for _, src := range e.r.state.sources {
-		w, ok := src.(Watcher)
-		if !ok {
-			hasNonWatcher = true
-			continue
-		}
-		sub, err := w.Watch(e.ctx)
-		if err != nil {
-			e.r.state.logger.Warn("recon: watch subscribe failed",
-				"source", src.Name(), "err", err)
-			continue
-		}
-		e.wg.Add(1)
-		go e.forward(src.Name(), sub)
-	}
-	if hasNonWatcher && e.r.state.opts.pollInterval > 0 {
-		e.wg.Add(1)
-		go e.poll(e.r.state.opts.pollInterval)
+		e.subscribeLocked(src)
 	}
 	e.wg.Add(1)
 	go e.loop()
+}
+
+// subscribeLocked subscribes to src when it is a [Watcher], or starts
+// the poll ticker (once) for a non-Watcher source when [WithPoll] is
+// set. A subscription failure is logged, not returned. Caller must
+// hold r.state.mu.
+func (e *watchEngine) subscribeLocked(src Source) {
+	if e.ctx.Err() != nil {
+		return
+	}
+	w, ok := src.(Watcher)
+	if !ok {
+		if e.r.state.opts.pollInterval > 0 && !e.polling {
+			e.polling = true
+			e.wg.Add(1)
+			go e.poll(e.r.state.opts.pollInterval)
+		}
+		return
+	}
+	ctx, cancel := context.WithCancel(e.ctx)
+	sub, err := w.Watch(ctx)
+	if err != nil {
+		cancel()
+		e.r.state.logger.Warn("recon: watch subscribe failed",
+			"source", src.Name(), "err", err)
+		return
+	}
+	if e.subs == nil {
+		e.subs = map[string]context.CancelFunc{}
+	}
+	e.subs[src.Name()] = cancel
+	e.wg.Add(1)
+	go e.forward(src.Name(), sub)
+}
+
+// unsubscribeLocked cancels the subscription to the source named name,
+// if any. Caller must hold r.state.mu.
+func (e *watchEngine) unsubscribeLocked(name string) {
+	if cancel, ok := e.subs[name]; ok {
+		cancel()
+		delete(e.subs, name)
+	}
 }
 
 // poll fires a synthetic pending change every interval to drive
@@ -317,3 +345,21 @@ func valuesEqual(a, b Value) bool {
 	}
 	return reflect.DeepEqual(a.Any(), b.Any())
 }
+
+// watchRunner is the registry's handle on its watch engine. Only [New] and [NewWithCodecs]
+// convert a *watchEngine to it, so a program that never calls them links no engine.
+type watchRunner interface {
+	subscribeLocked(src Source)
+	unsubscribeLocked(name string)
+	stop()
+	eventsChan() <-chan Event
+}
+
+// startWatchEngine builds and starts r's watch engine. The caller must hold r.state.mu.
+func startWatchEngine(r *Registry) watchRunner {
+	e := newWatchEngine(r)
+	e.start()
+	return e
+}
+
+func (e *watchEngine) eventsChan() <-chan Event { return e.events }

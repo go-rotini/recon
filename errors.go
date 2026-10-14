@@ -3,6 +3,7 @@ package recon
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -37,8 +38,12 @@ var (
 	// to the requested Go type.
 	ErrCoercion = errors.New("recon: coercion failed")
 
-	// ErrReadOnlySource is returned when a write is attempted against
-	// a read-only source.
+	// ErrReadOnlySource reports a write attempted against a read-only
+	// source.
+	//
+	// Deprecated: recon never writes to a source, so nothing in recon
+	// returns it. A custom [Source] with its own write path should
+	// define its own error.
 	ErrReadOnlySource = errors.New("recon: source is read-only")
 
 	// ErrAliasCycle is returned when [Registry.RegisterAlias] would
@@ -56,8 +61,8 @@ var (
 	// failure.
 	ErrValidation = errors.New("recon: validation failed")
 
-	// ErrSourceConflict is returned when [Registry.AddSource] would
-	// introduce a duplicate name.
+	// ErrSourceConflict is returned when a source or [Configs] entry
+	// would get an empty, duplicate, or reserved name.
 	ErrSourceConflict = errors.New("recon: source name conflict")
 
 	// ErrRegistryClosed is returned by operations on a Closed
@@ -83,28 +88,36 @@ var (
 )
 
 // Position is a source-local position used by [ParseError]. Line and
-// Column are 1-indexed; both zero means unknown.
+// Column are 1-indexed; both zero means unknown. Column is taken from
+// the codec's error: it counts bytes for YAML, JSON, JSONC and dotenv,
+// and characters for TOML; an error that knows only its line has
+// Column 0.
 type Position struct {
 	Line   int
 	Column int
 }
 
-// String formats the position as "line:col", or returns "" for the
-// zero value.
+// String formats the position as "line:col", as "line" when the column
+// is unknown, or returns "" for the zero value.
 func (p Position) String() string {
 	if p.Line == 0 && p.Column == 0 {
 		return ""
 	}
+	if p.Column == 0 {
+		return strconv.Itoa(p.Line)
+	}
 	return fmt.Sprintf("%d:%d", p.Line, p.Column)
 }
 
-// MultiError aggregates per-field / per-key errors from a single Load
-// or Bind. Implements the Go 1.20+ errors.Unwrap() []error contract so
-// errors.Is and errors.As traverse every contained error.
+// MultiError aggregates the errors of one operation, such as a
+// [Registry.Bind] or a snapshot rebuild. Its Unwrap() []error method
+// lets errors.Is and errors.As see every contained error.
 type MultiError struct {
 	Errors []error
 }
 
+// Error returns the single error's text, or a count followed by one
+// line per error.
 func (m *MultiError) Error() string {
 	switch len(m.Errors) {
 	case 0:
@@ -126,6 +139,7 @@ func (m *MultiError) Error() string {
 	}
 }
 
+// Unwrap returns the contained errors.
 func (m *MultiError) Unwrap() []error { return m.Errors }
 
 // Append adds err to the MultiError. Nil is a no-op.
@@ -143,6 +157,7 @@ type MissingRequiredError struct {
 	Sources []string // names of sources consulted, in precedence order
 }
 
+// Error describes the missing key.
 func (e *MissingRequiredError) Error() string {
 	if len(e.Sources) == 0 {
 		return fmt.Sprintf("recon: missing required value for %s", e.Path)
@@ -150,9 +165,8 @@ func (e *MissingRequiredError) Error() string {
 	return fmt.Sprintf("recon: missing required value for %s (sources consulted: %s)", e.Path, strings.Join(e.Sources, ", "))
 }
 
-// Is matches against [ErrMissingRequired] and against peer errors with
-// the same path. Direct comparison against the sentinel before the
-// peer check avoids false positives.
+// Is matches [ErrMissingRequired] and any *MissingRequiredError with
+// the same Path.
 func (e *MissingRequiredError) Is(target error) bool {
 	if target == ErrMissingRequired {
 		return true
@@ -169,10 +183,13 @@ type EmptyValueError struct {
 	Source string
 }
 
+// Error describes the empty key and its source.
 func (e *EmptyValueError) Error() string {
 	return fmt.Sprintf("recon: empty value for %s (from source %q)", e.Path, e.Source)
 }
 
+// Is matches [ErrEmptyValue] and any *EmptyValueError with the same
+// Path and Source.
 func (e *EmptyValueError) Is(target error) bool {
 	if target == ErrEmptyValue {
 		return true
@@ -184,9 +201,8 @@ func (e *EmptyValueError) Is(target error) bool {
 }
 
 // CoercionError reports that a wire value could not be converted to
-// the target Go type. When Secret is true, Cause is suppressed from
-// the rendered output so the offending value never leaves the
-// registry.
+// the target Go type. When Secret is true, Error prints "[redacted]"
+// in place of Cause's text.
 type CoercionError struct {
 	Path     Path
 	Source   string
@@ -196,6 +212,7 @@ type CoercionError struct {
 	Secret   bool
 }
 
+// Error describes the failed conversion.
 func (e *CoercionError) Error() string {
 	base := fmt.Sprintf("recon: coerce %s: %s → %s", e.Path, e.WireType, e.Target)
 	if e.Source != "" {
@@ -211,23 +228,27 @@ func (e *CoercionError) Error() string {
 	return base
 }
 
+// Unwrap returns Cause.
 func (e *CoercionError) Unwrap() error { return e.Cause }
 
+// Is matches [ErrCoercion].
 func (e *CoercionError) Is(target error) bool {
 	return errors.Is(target, ErrCoercion)
 }
 
-// UnknownKeyError reports that strict-mode decoding rejected an extra
-// key.
+// UnknownKeyError reports a key that no field of a strict
+// [Registry.Bind] target consumed.
 type UnknownKeyError struct {
 	Path   Path
 	Source string
 }
 
+// Error describes the unknown key and its source.
 func (e *UnknownKeyError) Error() string {
 	return fmt.Sprintf("recon: unknown key %s (source %q, strict mode)", e.Path, e.Source)
 }
 
+// Is matches [ErrUnknownKey].
 func (e *UnknownKeyError) Is(target error) bool {
 	return errors.Is(target, ErrUnknownKey)
 }
@@ -241,10 +262,13 @@ type ImmutableChangedError struct {
 	New  string
 }
 
+// Error describes the rejected change.
 func (e *ImmutableChangedError) Error() string {
 	return fmt.Sprintf("recon: immutable key %s changed: %q → %q", e.Path, e.Old, e.New)
 }
 
+// Is matches [ErrImmutableChanged] and any *ImmutableChangedError with
+// the same Path.
 func (e *ImmutableChangedError) Is(target error) bool {
 	if target == ErrImmutableChanged {
 		return true
@@ -255,18 +279,19 @@ func (e *ImmutableChangedError) Is(target error) bool {
 	return false
 }
 
-// SourceError reports that a source failed to read, watch, or
-// refresh.
+// SourceError reports that an operation on a named source failed.
 type SourceError struct {
 	Source string
-	Op     string // "get" / "watch" / "refresh" / "close"
+	Op     string // "list" / "get" (remote reads), "close", or "pin"
 	Cause  error
 }
 
+// Error describes the failed operation.
 func (e *SourceError) Error() string {
 	return fmt.Sprintf("recon: source %q %s: %v", e.Source, e.Op, e.Cause)
 }
 
+// Unwrap returns Cause.
 func (e *SourceError) Unwrap() error { return e.Cause }
 
 // AliasCycleError reports that [Registry.RegisterAlias] would create
@@ -275,6 +300,7 @@ type AliasCycleError struct {
 	Chain []Path
 }
 
+// Error lists the alias chain.
 func (e *AliasCycleError) Error() string {
 	parts := make([]string, len(e.Chain))
 	for i, p := range e.Chain {
@@ -283,20 +309,34 @@ func (e *AliasCycleError) Error() string {
 	return fmt.Sprintf("recon: alias cycle: %s", strings.Join(parts, " → "))
 }
 
+// Is matches [ErrAliasCycle].
 func (e *AliasCycleError) Is(target error) bool {
 	return errors.Is(target, ErrAliasCycle)
 }
 
 // ValidationError reports that a [SchemaValidator] rejected a key.
-// When Secret is true, Msg is replaced by "[redacted]" so the
-// offending value never reaches the caller's log.
+// When Secret is true, Error prints "[redacted]" in place of Msg.
 type ValidationError struct {
 	Path   Path
 	Rule   string
 	Msg    string
 	Secret bool
+	// Cause is the validator's own error, when it has one: a
+	// *jsonschema.ValidationError from [JSONSchemaValidator], with its
+	// nested causes and keyword locations. Unwrap returns it, except
+	// when Secret is true, since it may quote the value.
+	Cause error
 }
 
+// Unwrap returns Cause, or nil when Secret is true.
+func (e *ValidationError) Unwrap() error {
+	if e.Secret {
+		return nil
+	}
+	return e.Cause
+}
+
+// Error describes the failed rule.
 func (e *ValidationError) Error() string {
 	msg := e.Msg
 	if e.Secret {
@@ -308,6 +348,7 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("recon: validation %s: %s", e.Path, msg)
 }
 
+// Is matches [ErrValidation].
 func (e *ValidationError) Is(target error) bool {
 	return errors.Is(target, ErrValidation)
 }
@@ -327,6 +368,8 @@ type ParseError struct {
 	Msg string
 }
 
+// Error renders "recon: parse path:line:col: msg", omitting the parts
+// that are unknown.
 func (e *ParseError) Error() string {
 	loc := e.location()
 	if loc == "" {
@@ -355,12 +398,17 @@ func (e *ParseError) detail() string {
 	return fmt.Sprint(e.Cause)
 }
 
+// Unwrap returns Cause.
 func (e *ParseError) Unwrap() error { return e.Cause }
 
-// DeprecationWarning is a non-fatal notice that a `deprecated`-tagged
-// key was read. Delivered on [Event.Warnings] and via
-// [Registry.DrainWarnings]. Replacement is empty unless the
-// `deprecated=` tag option named one.
+// DeprecationWarning is a non-fatal notice that a source supplied a
+// `deprecated`-tagged key during a bind. Message is the `deprecated=`
+// tag value, or a generic message when the tag has none. The tag has
+// no replacement form, so Replacement is left for callers that build
+// their own warnings. Delivered on [Event.Warnings] and via
+// [Registry.DrainWarnings]. The watch engine and [Live] also use it,
+// with an empty Path, to report events dropped because a channel was
+// full.
 type DeprecationWarning struct {
 	Path        Path
 	Source      string
@@ -368,7 +416,12 @@ type DeprecationWarning struct {
 	Message     string
 }
 
+// String renders the warning on one line. A warning with an empty Path
+// renders as its Message.
 func (w DeprecationWarning) String() string {
+	if len(w.Path) == 0 {
+		return w.Message
+	}
 	out := fmt.Sprintf("recon: %s is deprecated", w.Path)
 	if w.Source != "" {
 		out += fmt.Sprintf(" (source %q)", w.Source)
@@ -376,8 +429,30 @@ func (w DeprecationWarning) String() string {
 	if len(w.Replacement) > 0 {
 		out += fmt.Sprintf("; use %s instead", w.Replacement)
 	}
-	if w.Message != "" {
+	if w.Message != "" && w.Message != genericDeprecationMessage(w.Path) {
 		out += ": " + w.Message
 	}
 	return out
 }
+
+// genericDeprecationMessage is the Message of a warning whose
+// `deprecated` tag carries no text.
+func genericDeprecationMessage(p Path) string {
+	return "recon: key " + p.String() + " is deprecated"
+}
+
+// schemaValidationError is a validator's error err as the registry
+// reports it: under a "recon: schema validation: " prefix, with err's
+// own "recon: " prefix dropped so it is not repeated.
+func schemaValidationError(err error) error {
+	return &schemaError{err: err}
+}
+
+// schemaError is the error [schemaValidationError] returns.
+type schemaError struct{ err error }
+
+func (e *schemaError) Error() string {
+	return "recon: schema validation: " + strings.TrimPrefix(e.err.Error(), "recon: ")
+}
+
+func (e *schemaError) Unwrap() error { return e.err }

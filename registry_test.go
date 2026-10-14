@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -560,4 +561,15 @@ func TestRegistry_ConcurrentReadsWithWrites(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	close(stop)
 	wg.Wait()
+}
+
+func TestRegistry_New_RejectedFirstSnapshotReturnsError(t *testing.T) {
+	v := &rejectingValidator{rejectKey: "port"}
+	r, err := New(WithValidator(v), WithSource(NewMapSource("m", map[string]any{"port": "x"})))
+	if err == nil || !strings.Contains(err.Error(), "rejected by validator") {
+		t.Fatalf("err=%v, want the validator's error", err)
+	}
+	if r != nil {
+		t.Fatal("want nil Registry on rejected first snapshot")
+	}
 }

@@ -12,7 +12,9 @@ import (
 // for shipping a default config embedded in the binary and overlaying
 // a user-supplied file on top via precedence.
 //
-// Read-only: no [Reload], no [Watcher] — embedded files don't change.
+// It is read once: it has no Reload method and is not a [Watcher].
+// Path expansion and [WithSearchPaths] do not apply; a leading "/" in
+// the path is dropped, since [io/fs.FS] paths are relative.
 type FileSourceFS struct {
 	*MapSource
 
@@ -67,7 +69,7 @@ func newFileSourceFS(codecs *Codecs, parseErr parseErrorFunc, name string, fsys 
 	}
 
 	return &FileSourceFS{
-		MapSource: NewMapSource(name, decoded),
+		MapSource: newFileMapSource(name, decoded, freshDecoder(codec), cfg),
 		codec:     codec,
 		path:      path,
 		optional:  cfg.optional,
@@ -91,7 +93,7 @@ func (s *FileSourceFS) Format() string {
 // "/etc/myapp/config.yaml" with both source kinds.
 func readFSMaybeOptional(fsys fs.FS, path string, optional bool) (data []byte, missing bool, err error) {
 	clean := strings.TrimPrefix(filepath.ToSlash(path), "/")
-	b, err := fs.ReadFile(fsys, clean)
+	b, err := readFSFileCapped(fsys, clean)
 	if err != nil {
 		if optional && errors.Is(err, fs.ErrNotExist) {
 			return nil, true, nil

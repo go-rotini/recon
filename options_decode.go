@@ -15,13 +15,14 @@ type decodeOptions struct {
 	errorBehavior  *ErrorBehavior // nil → inherit registry default
 	tagName        string         // default "recon"
 	ctx            context.Context
-	customDecoders map[string]customDecoderFn // by reflect.Type.String()
+	customDecoders map[reflect.Type]customDecoderFn
 }
 
 // customDecoderFn is the type-erased shape [WithCustomDecoder] stores.
 type customDecoderFn func(Value) (any, error)
 
-// WithDecodeStrict turns on strict decoding for this call.
+// WithDecodeStrict turns on strict decoding (see [WithStrict]) for this
+// call.
 func WithDecodeStrict() DecodeOption {
 	return func(o *decodeOptions) { t := true; o.strict = &t }
 }
@@ -51,20 +52,16 @@ func WithDecodeContext(ctx context.Context) DecodeOption {
 }
 
 // WithCustomDecoder registers a per-call decoder for type T. When a
-// bound field has Go type T, fn receives the resolved [Value] in
-// place of the built-in coercion.
+// bound field has Go type T, fn receives the resolved [Value], or the
+// field's `default=` text when no layer sets it, in place of the
+// built-in coercion.
 func WithCustomDecoder[T any](fn func(Value) (T, error)) DecodeOption {
 	return func(o *decodeOptions) {
 		if o.customDecoders == nil {
-			o.customDecoders = map[string]customDecoderFn{}
+			o.customDecoders = map[reflect.Type]customDecoderFn{}
 		}
-		var zero T
-		o.customDecoders[typeKey(zero)] = func(v Value) (any, error) {
+		o.customDecoders[reflect.TypeFor[T]()] = func(v Value) (any, error) {
 			return fn(v)
 		}
 	}
-}
-
-func typeKey[T any](_ T) string {
-	return reflect.TypeFor[T]().String()
 }

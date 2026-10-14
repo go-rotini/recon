@@ -42,11 +42,21 @@ type registryState struct {
 	// on every event.
 	pendingWarnings []DeprecationWarning
 
+	// bound holds the paths a bind looked up that no source's Keys
+	// reported, so every rebuild resolves them too (an env var such as
+	// APP_MAX_CONNS reaches a max_conns field this way). Replaced, never
+	// mutated, so a snapshot build can read it without a copy.
+	bound map[string]struct{}
+
+	// consulted holds every path a bind has read. Save keeps an
+	// un-prefixed environment source's keys only when a bind read them.
+	consulted map[string]struct{}
+
 	closeOnce sync.Once
 	closed    atomic.Bool
 	logger    *slog.Logger
 	opts      registryOptions
-	watch     *watchEngine
+	watch     watchRunner
 }
 
 // Registry is the central configuration registry. Construct via [New].
@@ -54,7 +64,7 @@ type registryState struct {
 // the registry's mutex, rebuild the snapshot, and atomic-store.
 //
 // Close the Registry when no longer needed to release source resources
-// and the Events channel. [Sub] returns a *Registry that shares state
+// and the Events channel. [Registry.Sub] returns a *Registry that shares state
 // with its parent but resolves keys under a prefix; closing the parent
 // invalidates every sub view.
 type Registry struct {
@@ -66,12 +76,17 @@ type Registry struct {
 // build. Sources in [WithSource] / [WithSources] are added in argument
 // order, first being highest precedence.
 //
-// The returned Registry is functional even when the error is non-nil,
-// enabling tests that assert "this registration would have failed"
-// while still inspecting the registry. Production callers should treat
-// any non-nil error as a hard stop.
+// An invalid option (such as a [WithSchema] schema that fails to
+// compile) returns a nil Registry. A source that cannot be added is
+// returned as the error alongside a usable Registry holding the
+// sources before it; treat any non-nil error as fatal. If the first
+// snapshot holds values and fails schema validation, New returns the
+// validation error and a nil Registry; the sources are not closed and
+// stay the caller's. A first snapshot with no values is not refused,
+// so a registry can start empty under a schema that requires keys and
+// receive them through [Registry.Set].
 //
-// The registry's codec set (used by `format=` struct tags and [Save])
+// The registry's codec set (used by `format=` struct tags and [Registry.Save])
 // is [DefaultCodecs] unless an option replaces it. Use [NewWithCodecs]
 // to link only the codecs a program uses.
 func New(opts ...Option) (*Registry, error) {
@@ -83,7 +98,7 @@ func New(opts ...Option) (*Registry, error) {
 		return nil, options.optionErr
 	}
 	options.finishCodecs(DefaultCodecs)
-	return buildRegistry(options)
+	return buildRegistry(options, startWatchEngine)
 }
 
 // NewWithCodecs is [New] with codecs as the registry's codec set in
@@ -104,19 +119,15 @@ func NewWithCodecs(codecs *Codecs, opts ...Option) (*Registry, error) {
 		return nil, options.optionErr
 	}
 	options.finishCodecs(func() *Codecs { return NewCodecs() })
-	return buildRegistry(options)
+	return buildRegistry(options, startWatchEngine)
 }
 
 // buildRegistry builds a Registry from fully resolved options.
-func buildRegistry(options registryOptions) (*Registry, error) {
+func buildRegistry(options registryOptions, startWatch func(*Registry) watchRunner) (*Registry, error) {
 	r := &Registry{
 		state: &registryState{
-			opts:      options,
-			explicits: map[string]any{},
-			defaults:  map[string]any{},
-			aliases:   map[string]string{},
-			pins:      map[string]string{},
-			logger:    options.logger,
+			opts:   options,
+			logger: options.logger, // its maps are made by the first write (see writable)
 		},
 	}
 	if r.state.logger == nil {
@@ -138,13 +149,18 @@ func buildRegistry(options registryOptions) (*Registry, error) {
 		r.applyPrecedenceLocked(options.precedence)
 	}
 
-	r.rebuildAndReport()
+	// A rejected first snapshot that holds values fails New: returning
+	// a registry would hide every one of them. A rejected empty one
+	// does not, so values can still arrive later through Set.
+	if candidate, err := r.rebuildCandidateLocked(); err != nil && len(candidate.values) > 0 {
+		r.state.mu.Unlock()
+		return nil, errors.Join(addErr, err)
+	}
 
 	// Start the engine while we still hold the lock so the source set it
 	// subscribes to matches the snapshot we just installed.
-	if !options.noWatch {
-		r.state.watch = newWatchEngine(r)
-		r.state.watch.start()
+	if !options.noWatch && startWatch != nil {
+		r.state.watch = startWatch(r)
 	}
 
 	r.state.mu.Unlock()
@@ -169,22 +185,24 @@ func (r *Registry) Close() error {
 
 		r.state.mu.Lock()
 		defer r.state.mu.Unlock()
-		multi := &MultiError{}
+		var multi MultiError // escapes only when it holds errors
 		for _, s := range r.state.sources {
 			if cerr := s.Close(); cerr != nil {
 				multi.Append(&SourceError{Source: s.Name(), Op: "close", Cause: cerr})
 			}
 		}
 		if len(multi.Errors) > 0 {
-			err = multi
+			err = &MultiError{Errors: multi.Errors}
 		}
 	})
 	return err
 }
 
 // Events returns the channel reload events are delivered on. Each
-// reload — successful or failed — produces one [Event]; failures
-// retain the previous snapshot and surface via [Event.Err]. The channel
+// reload the watch engine runs (after a watched source changes or a
+// [WithPoll] tick) produces one [Event], successful or failed; failures
+// retain the previous snapshot and surface via [Event.Err]. Calls to
+// [Registry.Reload] and the write methods produce no Event. The channel
 // is buffered (capacity from [WithEventBufferSize], default 16). Slow
 // consumers cause drops surfaced on the next deliverable Event's
 // Warnings. Returns nil for a registry built [WithoutWatch].
@@ -192,15 +210,20 @@ func (r *Registry) Events() <-chan Event {
 	if r.state.watch == nil {
 		return nil
 	}
-	return r.state.watch.events
+	return r.state.watch.eventsChan()
 }
 
-// Reload re-reads every watched source and rebuilds the snapshot.
+// Reload rebuilds the snapshot from every source's current contents.
+// It does not make sources re-read their backing store: a
+// [FileSource] re-reads on [FileSource.Reload] or a watcher event, a
+// [RemoteSource] on [RemoteSource.Refresh] or its watch. The rebuild
+// runs the immutable and schema checks; on failure the previous
+// snapshot stays and the error is returned.
 func (r *Registry) Reload() error { return r.ReloadContext(context.Background()) }
 
-// ReloadContext is the context-aware [Reload]. The context flows to
-// remote backends during their refresh call; in-memory sources ignore
-// it. A canceled ctx aborts and returns ctx.Err() wrapped.
+// ReloadContext is [Registry.Reload] that first checks ctx: a nil ctx
+// returns [ErrNilContext] and a done ctx returns its error wrapped.
+// ctx is not passed to sources.
 func (r *Registry) ReloadContext(ctx context.Context) error {
 	if r.state.closed.Load() {
 		return ErrRegistryClosed
@@ -218,7 +241,8 @@ func (r *Registry) ReloadContext(ctx context.Context) error {
 
 // AddSource registers s at the lowest precedence. Returns
 // [ErrSourceConflict] when a source with the same Name() already exists
-// or Name() is a reserved label.
+// or Name() is a reserved label. A registry that watches subscribes to
+// s as it does to sources given at construction (see [Watcher]).
 //
 // Transactional: if the post-add rebuild fails, the source is rolled
 // out of the chain. The source's Close is not invoked on rollback —
@@ -236,12 +260,15 @@ func (r *Registry) AddSource(s Source) error {
 		r.state.sources = r.state.sources[:len(r.state.sources)-1]
 		return err
 	}
+	if r.state.watch != nil {
+		r.state.watch.subscribeLocked(s)
+	}
 	return nil
 }
 
 // InsertSource registers s at precedence index at (0 = highest). An
 // out-of-range index is clamped to [0, len(sources)]. Same conflict
-// and transactional semantics as [AddSource].
+// and transactional semantics as [Registry.AddSource].
 func (r *Registry) InsertSource(at int, s Source) error {
 	if r.state.closed.Load() {
 		return ErrRegistryClosed
@@ -265,6 +292,9 @@ func (r *Registry) InsertSource(at int, s Source) error {
 	if err := r.rebuildSnapshotLocked(); err != nil {
 		r.state.sources = slices.Delete(r.state.sources, at, at+1)
 		return err
+	}
+	if r.state.watch != nil {
+		r.state.watch.subscribeLocked(s)
 	}
 	return nil
 }
@@ -290,6 +320,9 @@ func (r *Registry) RemoveSource(name string) error {
 		if err := r.rebuildSnapshotLocked(); err != nil {
 			r.state.sources = slices.Insert(r.state.sources, i, removed)
 			return err
+		}
+		if r.state.watch != nil {
+			r.state.watch.unsubscribeLocked(name)
 		}
 		_ = s.Close()
 		return nil
@@ -345,10 +378,10 @@ func (r *Registry) Validate() error {
 	}
 	if err := validator.Validate(input); err != nil {
 		r.state.mu.Lock()
-		secrets := cloneStringSet(r.state.secretKeys)
+		secrets := r.secretMatcherLocked()
 		r.state.mu.Unlock()
 		redactValidationErrorsForSecrets(err, secrets)
-		return fmt.Errorf("recon: schema validation: %w", err)
+		return schemaValidationError(err)
 	}
 	return nil
 }
@@ -446,33 +479,25 @@ func (r *Registry) applyPrecedenceLocked(order []string) {
 }
 
 // redactValidationErrorsForSecrets walks err and flags any
-// [*ValidationError] whose Path is in secretKeys as Secret. Applied
-// after the validator returns so the [SchemaValidator] interface stays
-// free of recon-specific concerns.
-func redactValidationErrorsForSecrets(err error, secretKeys map[string]struct{}) {
-	if err == nil || len(secretKeys) == 0 {
+// [*ValidationError] whose Path is secret as Secret. It visits every
+// error in the tree, through both Unwrap() error and Unwrap() []error
+// (so errors.Join and multiple %w verbs are covered). Applied after
+// the validator returns so the [SchemaValidator] interface stays free
+// of recon-specific concerns.
+func redactValidationErrorsForSecrets(err error, secrets secretMatcher) {
+	if err == nil || len(secrets.keys) == 0 {
 		return
 	}
-	if multi, ok := errors.AsType[*MultiError](err); ok {
-		for _, sub := range multi.Errors {
-			redactValidationErrorsForSecrets(sub, secretKeys)
-		}
-		return
+	if ve, ok := err.(*ValidationError); ok && secrets.has(ve.Path.String()) { //nolint:errorlint // every node of the tree is visited below
+		ve.Secret = true
 	}
-	if ve, ok := errors.AsType[*ValidationError](err); ok {
-		if _, ok := secretKeys[ve.Path.String()]; ok {
-			ve.Secret = true
+	switch x := err.(type) { //nolint:errorlint // walks the tree by hand
+	case interface{ Unwrap() []error }:
+		for _, sub := range x.Unwrap() {
+			redactValidationErrorsForSecrets(sub, secrets)
 		}
-	}
-}
-
-// rebuildAndReport is the non-fatal variant of [rebuildSnapshotLocked]
-// used by [New] when the first snapshot fails the immutable or
-// validator check but the registry should still be returned. Caller
-// must hold r.state.mu.
-func (r *Registry) rebuildAndReport() {
-	if err := r.rebuildSnapshotLocked(); err != nil {
-		r.state.logger.Warn("recon: initial snapshot rejected", "err", err)
+	case interface{ Unwrap() error }:
+		redactValidationErrorsForSecrets(x.Unwrap(), secrets)
 	}
 }
 
@@ -485,62 +510,78 @@ func (r *Registry) rebuildAndReport() {
 // error or the explicit / default / alias state drifts out of sync
 // with the installed snapshot.
 func (r *Registry) rebuildSnapshotLocked() error {
+	_, err := r.rebuildCandidateLocked()
+	return err
+}
+
+// rebuildCandidateLocked is [Registry.rebuildSnapshotLocked] that also
+// returns the candidate snapshot, installed or not. Caller must hold
+// r.state.mu.
+func (r *Registry) rebuildCandidateLocked() (*Snapshot, error) {
 	is := snapshotInputs{
 		sources:    r.state.sources,
-		explicits:  cloneStringAnyMap(r.state.explicits),
-		defaults:   cloneStringAnyMap(r.state.defaults),
-		aliases:    cloneStringStringMap(r.state.aliases),
-		pins:       cloneStringStringMap(r.state.pins),
+		explicits:  snapshotCopy(r.state.explicits),
+		defaults:   snapshotCopy(r.state.defaults),
+		aliases:    snapshotCopy(r.state.aliases),
+		pins:       snapshotCopy(r.state.pins),
+		bound:      r.state.bound,
 		secretKeys: cloneStringSet(r.state.secretKeys),
 		redactor:   r.state.opts.secretRedactor,
 		merge:      r.state.opts.merge,
 	}
 	candidate := buildSnapshot(is)
 
-	multi := &MultiError{}
+	var multi MultiError // escapes only when it holds errors, below
 	for _, err := range r.checkImmutableLocked(candidate) {
 		multi.Append(err)
 	}
 	if r.state.opts.validator != nil {
 		if err := r.state.opts.validator.Validate(candidate.AsMap()); err != nil {
-			redactValidationErrorsForSecrets(err, candidate.secretKeys)
-			multi.Append(fmt.Errorf("recon: schema validation: %w", err))
+			redactValidationErrorsForSecrets(err, candidate.secrets())
+			multi.Append(schemaValidationError(err))
 		}
 	}
 	if len(multi.Errors) > 0 {
 		if len(multi.Errors) == 1 {
-			return multi.Errors[0]
+			return candidate, multi.Errors[0]
 		}
-		return multi
+		return candidate, &MultiError{Errors: multi.Errors}
 	}
 
 	r.state.snapshot.Store(candidate)
-	return nil
+	return candidate, nil
 }
 
 // checkImmutableLocked returns one [*ImmutableChangedError] per
-// baselined path whose candidate value differs. Caller must hold
-// r.state.mu.
+// baselined path whose candidate value differs or is no longer set
+// (New is "<unset>"). Caller must hold r.state.mu.
 func (r *Registry) checkImmutableLocked(snap *Snapshot) []error {
 	if len(r.state.immutableBaseline) == 0 {
 		return nil
 	}
+	secrets := snap.secrets()
 	var errs []error
 	for path, baseline := range r.state.immutableBaseline {
-		cur, ok := snap.values[path]
-		if !ok {
-			continue
+		mode := readExact
+		if baseline.Kind() == MapKind {
+			mode = readSection
 		}
-		if valuesEqual(baseline, cur) {
+		cur, ok := snap.read(path, nil, mode)
+		if ok && valuesEqual(baseline, cur) {
 			continue
 		}
 		old := baseline.String()
-		next := cur.String()
-		if _, secret := r.state.secretKeys[path]; secret {
+		next := unsetText
+		if ok {
+			next = cur.String()
+		}
+		if secrets.has(path) {
 			redactor := r.state.opts.secretRedactor
 			if redactor != nil {
 				old = redactor(old)
-				next = redactor(next)
+				if ok {
+					next = redactor(next)
+				}
 			}
 		}
 		errs = append(errs, &ImmutableChangedError{
@@ -552,17 +593,37 @@ func (r *Registry) checkImmutableLocked(snap *Snapshot) []error {
 	return errs
 }
 
-// queueWarning appends w to the registry's pending warning queue.
+// unsetText is [ImmutableChangedError.New] for a key that is no longer
+// set.
+const unsetText = "<unset>"
+
+// queueWarning appends w to the registry's pending warning queue,
+// unless an equal warning is already queued.
 func (r *Registry) queueWarning(w DeprecationWarning) {
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
+	for _, q := range r.state.pendingWarnings {
+		if q.Source == w.Source && q.Message == w.Message && q.Path.Equal(w.Path) && q.Replacement.Equal(w.Replacement) {
+			return
+		}
+	}
 	r.state.pendingWarnings = append(r.state.pendingWarnings, w)
 }
 
-// DrainWarnings returns and clears the pending warning queue. The
-// watch engine drains the same queue on every event emit; callers that
-// run [Bind] without live reload use this to surface deprecations
-// directly. Returns nil when empty.
+// secretMatcherLocked returns a matcher over copies of the registry's
+// secret and alias sets. Caller must hold r.state.mu.
+func (r *Registry) secretMatcherLocked() secretMatcher {
+	return secretMatcher{
+		keys:    cloneStringSet(r.state.secretKeys),
+		aliases: cloneStringStringMap(r.state.aliases),
+	}
+}
+
+// DrainWarnings returns and clears the pending warning queue. A warning
+// already queued is not queued again, so binding repeatedly does not
+// grow it. The watch engine drains the same queue into each reload [Event]; callers
+// that run [Registry.Bind] without live reload use this to surface
+// deprecations directly. Returns nil when empty.
 func (r *Registry) DrainWarnings() []DeprecationWarning {
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
@@ -594,7 +655,8 @@ func (r *Registry) markImmutable(path Path, baseline Value) {
 	r.state.immutableBaseline[pathStr] = baseline
 }
 
-// IsImmutable reports whether path has an immutable baseline recorded.
+// IsImmutable reports whether key has an immutable baseline, recorded
+// when a bind found a value for an `immutable`-tagged field.
 func (r *Registry) IsImmutable(key string) bool {
 	if r.state.closed.Load() {
 		return false
@@ -621,10 +683,38 @@ func cloneStringStringMap(m map[string]string) map[string]string {
 	return out
 }
 
+// snapshotCopy is the copy of m a snapshot build reads: nil when m is empty, which the build
+// reads as the empty map it is, and never writes to.
+func snapshotCopy[V any](m map[string]V) map[string]V {
+	if len(m) == 0 {
+		return nil
+	}
+	return maps.Clone(m)
+}
+
 // validateNotClosed returns [ErrRegistryClosed] when r has been Closed.
 func (r *Registry) validateNotClosed() error {
 	if r.state.closed.Load() {
 		return ErrRegistryClosed
 	}
 	return nil
+}
+
+// NewWithCodecsWithoutWatch is [NewWithCodecs] with [WithoutWatch]: a one-shot registry. A
+// program that builds registries only this way links no watch engine.
+func NewWithCodecsWithoutWatch(codecs *Codecs, opts ...Option) (*Registry, error) {
+	options := defaultRegistryOptions()
+	options.codecs = codecs
+	if options.codecs == nil {
+		options.codecs = NewCodecs()
+	}
+	for _, opt := range opts {
+		opt(&options)
+	}
+	if options.optionErr != nil {
+		return nil, options.optionErr
+	}
+	options.finishCodecs(func() *Codecs { return NewCodecs() })
+	options.noWatch = true
+	return buildRegistry(options, nil)
 }

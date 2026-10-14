@@ -12,7 +12,7 @@ func TestJSONCCodec_AcceptsCommentsAndTrailingCommas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	if m["k"] != float64(1) {
+	if m["k"] != int64(1) {
 		t.Fatalf("k=%v, want 1", m["k"])
 	}
 	sub, ok := m["nested"].(map[string]any)

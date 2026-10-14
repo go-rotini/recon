@@ -9,16 +9,16 @@ import (
 	"time"
 )
 
-// TestLiveReload_FileSourceEndToEnd is the §8.4 live-reload harness
+// TestLiveReload_FileSourceEndToEnd is the live-reload harness
 // scenario, in its compact form: create a registry with a watched file
 // source, atomic-rewrite the file, assert a SourceChange arrives, and
 // assert the registry's Get returns the new value after invoking the
 // reload.
 //
-// Phase 5 wires the watcher backend into FileSource.Watch but stops
-// short of the full watch engine — there's no automatic registry
-// reload on every event yet (that's Phase 8). The test therefore
-// drives the reload manually once the SourceChange is observed.
+// The test reads the source's own Watch channel and then calls Reload
+// itself, so it checks FileSource.Watch without depending on the watch
+// engine's timing; TestLiveReload_AutomaticReloadViaWatchEngine covers
+// the engine's automatic reload.
 func TestLiveReload_FileSourceEndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "watched.yaml")
@@ -93,9 +93,9 @@ func TestLiveReload_FileSourceEndToEnd(t *testing.T) {
 }
 
 // TestLiveReload_VirtualFSImmutable confirms that [FileSourceFS] holds
-// the bytes it was constructed with — virtual-FS live reload is a
-// Phase-8+ concern, so a mutation to the underlying fs.FS after
-// construction is intentionally NOT visible via the registry.
+// the bytes it was constructed with: it reads once, so a mutation to
+// the underlying fs.FS after construction is NOT visible via the
+// registry.
 func TestLiveReload_VirtualFSImmutable(t *testing.T) {
 	fsys := fstest.MapFS{
 		"config.yaml": &fstest.MapFile{Data: []byte("k: v1\n")},
@@ -116,9 +116,9 @@ func TestLiveReload_VirtualFSImmutable(t *testing.T) {
 	}
 }
 
-// TestLiveReload_AutomaticReloadViaWatchEngine is the Phase-8
-// strengthening of the harness: with the watch engine wired,
-// modifying a watched file MUST update the registry without any
+// TestLiveReload_AutomaticReloadViaWatchEngine checks the watch
+// engine end to end: modifying a watched file MUST update the
+// registry without any
 // manual r.Reload() call. The test asserts that Get returns the new
 // value purely as a consequence of the file change.
 func TestLiveReload_AutomaticReloadViaWatchEngine(t *testing.T) {

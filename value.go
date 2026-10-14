@@ -1,15 +1,18 @@
 package recon
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 )
 
-// ValueKind identifies the wire-form type of a [Value]. The registry
-// preserves the wire type from [Source] through coercion so callers can
-// request typed values without losing information.
+// ValueKind identifies the wire-form type of a [Value]: the type the
+// source produced, before any conversion to a Go type.
 type ValueKind int
 
 // ValueKind constants.
@@ -33,8 +36,8 @@ const (
 	SliceKind
 	// MapKind is a map from string to Value.
 	MapKind
-	// RawKind is bytes plus a format hint, used when a source defers
-	// parsing.
+	// RawKind is bytes plus a format hint ([RawValue]), made by
+	// [NewRawValue] for a source that defers parsing.
 	RawKind
 )
 
@@ -74,25 +77,45 @@ type Value struct {
 	kind   ValueKind
 	raw    any
 	source string
+
+	// bigUint marks [StringKind] decimal text made from a uint64 above
+	// math.MaxInt64, so encoding and validation see the number again.
+	bigUint bool
+
+	// bigInt marks [StringKind] decimal text of an integer outside the
+	// int64 and uint64 ranges, which encoding and validation see as a
+	// [json.Number].
+	bigInt bool
 }
 
 // NewValue wraps a Go value, inferring the [ValueKind] from its dynamic
-// type. Integer types canonicalize to int64; float32 widens to float64.
-// Unrecognized types fall through to StringKind via fmt.Sprint.
+// type. Integer types convert to int64, except a uint or uint64 above
+// math.MaxInt64, which becomes its decimal [StringKind] text (it
+// still binds to a uint64 field, and [Registry.Save], [Snapshot.AsMap]
+// and a validator see it as the uint64). A [json.Number] converts as
+// the number it holds; an integer outside the int64 and uint64 ranges
+// becomes its decimal [StringKind] text, which Save, AsMap and a
+// validator see as the json.Number. float32 widens to float64. Slices and
+// arrays (other than []byte) convert element by element to [SliceKind],
+// and maps with string keys to [MapKind]. Other types become
+// [StringKind] via fmt.Sprint.
 func NewValue(v any) Value {
 	switch x := v.(type) {
 	case nil:
 		return Value{kind: NullKind}
 	case Value:
 		return x
+	case json.Number:
+		return numberValue(x)
+	// A scalar keeps the interface it came in: boxing it again would copy it to the heap.
 	case string:
-		return Value{kind: StringKind, raw: x}
+		return Value{kind: StringKind, raw: v}
 	case bool:
-		return Value{kind: BoolKind, raw: x}
+		return Value{kind: BoolKind, raw: v}
 	case time.Time:
-		return Value{kind: TimeKind, raw: x}
+		return Value{kind: TimeKind, raw: v}
 	case time.Duration:
-		return Value{kind: DurationKind, raw: x}
+		return Value{kind: DurationKind, raw: v}
 	case []any:
 		out := make([]Value, len(x))
 		for i, e := range x {
@@ -117,7 +140,40 @@ func NewValue(v any) Value {
 	if num, ok := numericValue(v); ok {
 		return num
 	}
+	if coll, ok := collectionValue(v); ok {
+		return coll
+	}
 	return Value{kind: StringKind, raw: fmt.Sprint(v)}
+}
+
+// collectionValue converts any slice or array other than []byte to
+// [SliceKind], and any map with string keys to [MapKind], through
+// reflection.
+func collectionValue(v any) (Value, bool) {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			return Value{}, false
+		}
+		out := make([]Value, rv.Len())
+		for i := range out {
+			out[i] = NewValue(rv.Index(i).Interface())
+		}
+		return Value{kind: SliceKind, raw: out}, true
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			return Value{}, false
+		}
+		out := make(map[string]Value, rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			out[iter.Key().String()] = NewValue(iter.Value().Interface())
+		}
+		return Value{kind: MapKind, raw: out}, true
+	default:
+		return Value{}, false
+	}
 }
 
 // numericValue handles the integer / float arms of [NewValue].
@@ -133,9 +189,9 @@ func numericValue(v any) (Value, bool) {
 	case int32:
 		return Value{kind: IntKind, raw: int64(x)}, true
 	case int64:
-		return Value{kind: IntKind, raw: x}, true
+		return Value{kind: IntKind, raw: v}, true
 	case uint:
-		return Value{kind: IntKind, raw: int64(x)}, true
+		return uintValue(uint64(x)), true
 	case uint8:
 		return Value{kind: IntKind, raw: int64(x)}, true
 	case uint16:
@@ -143,13 +199,59 @@ func numericValue(v any) (Value, bool) {
 	case uint32:
 		return Value{kind: IntKind, raw: int64(x)}, true
 	case uint64:
-		return Value{kind: IntKind, raw: int64(x)}, true
+		return uintValue(x), true
 	case float32:
 		return Value{kind: FloatKind, raw: float64(x)}, true
 	case float64:
-		return Value{kind: FloatKind, raw: x}, true
+		return Value{kind: FloatKind, raw: v}, true
 	}
 	return Value{}, false
+}
+
+// uintValue wraps u as [IntKind], or as its decimal [StringKind] text
+// when it exceeds math.MaxInt64, so no value wraps negative. The text
+// still encodes, and reaches a validator, as the uint64.
+func uintValue(u uint64) Value {
+	if u > math.MaxInt64 {
+		return Value{kind: StringKind, raw: strconv.FormatUint(u, 10), bigUint: true}
+	}
+	return Value{kind: IntKind, raw: int64(u)}
+}
+
+// numberValue is [NewValue] for a [json.Number]: an integer as
+// [numericValue] or, outside the int64 and uint64 ranges, as marked
+// decimal text; anything else as a float64, or as plain text when it
+// is not one.
+func numberValue(n json.Number) Value {
+	s := n.String()
+	if isIntegerText(s) {
+		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return Value{kind: IntKind, raw: i}
+		}
+		if u, err := strconv.ParseUint(s, 10, 64); err == nil {
+			return uintValue(u)
+		}
+		return Value{kind: StringKind, raw: s, bigInt: true}
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return Value{kind: FloatKind, raw: f}
+	}
+	return Value{kind: StringKind, raw: s}
+}
+
+// isIntegerText reports whether s is a decimal integer: an optional
+// minus sign and one or more digits.
+func isIntegerText(s string) bool {
+	s = strings.TrimPrefix(s, "-")
+	if s == "" {
+		return false
+	}
+	for i := range len(s) {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // NewRawValue wraps undecoded bytes plus a format hint in a Value.
@@ -168,8 +270,9 @@ func (v Value) withSource(name string) Value {
 // Kind reports the wire-form type of v.
 func (v Value) Kind() ValueKind { return v.kind }
 
-// Source returns the name of the [Source] that produced v, or "" when v
-// was constructed directly and not yet adopted by a registry.
+// Source returns the name of the layer that supplied v in a registry
+// lookup (a source name, "explicit" or "default"), or "" for a Value
+// constructed directly.
 func (v Value) Source() string { return v.source }
 
 // IsZero reports whether v carries no underlying datum. A [NullKind]
@@ -178,10 +281,22 @@ func (v Value) IsZero() bool { return v.kind == NullKind }
 
 // Any returns the underlying Go value. The concrete type follows the
 // kind: string, int64, float64, bool, time.Time, time.Duration,
-// []Value, map[string]Value, [RawValue], or nil.
+// []Value, map[string]Value, [RawValue], or nil. The text of an integer
+// above the int64 range (see [NewValue]) is returned as the uint64, and
+// that of one beyond the uint64 range as a [json.Number].
 func (v Value) Any() any {
 	if v.kind == NullKind {
 		return nil
+	}
+	if s, ok := v.raw.(string); ok {
+		if v.bigUint {
+			if u, err := strconv.ParseUint(s, 10, 64); err == nil {
+				return u
+			}
+		}
+		if v.bigInt {
+			return json.Number(s)
+		}
 	}
 	return v.raw
 }
@@ -218,8 +333,10 @@ func unwrapValueDeep(v Value) any {
 }
 
 // String returns the canonical string representation of v. Strings are
-// returned verbatim; other kinds use fmt.Sprint on the raw value. Use
-// [Value.AsString] for the strict accessor.
+// returned verbatim and null is "". A whole-number float below 1e21 is
+// written without an exponent ("1000000", not "1e+06"), and a time in
+// RFC 3339 with nanoseconds; other kinds use fmt.Sprint on the raw
+// value. Use [Value.AsString] for the strict accessor.
 func (v Value) String() string {
 	switch v.kind {
 	case NullKind:
@@ -227,9 +344,28 @@ func (v Value) String() string {
 	case StringKind:
 		s, _ := v.raw.(string)
 		return s
+	case IntKind:
+		i, _ := v.raw.(int64)
+		return strconv.FormatInt(i, 10)
+	case FloatKind:
+		f, _ := v.raw.(float64)
+		return formatFloat(f)
+	case TimeKind:
+		t, _ := v.raw.(time.Time)
+		return t.Format(time.RFC3339Nano)
 	default:
 		return fmt.Sprint(v.raw)
 	}
+}
+
+// formatFloat writes f as fmt.Sprint does, except that a whole number
+// below 1e21 in magnitude is written in full rather than with an
+// exponent.
+func formatFloat(f float64) string {
+	if f == math.Trunc(f) && math.Abs(f) < 1e21 {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
 // AsString returns the string value if v is [StringKind].
@@ -241,7 +377,8 @@ func (v Value) AsString() (string, error) {
 	return s, nil
 }
 
-// AsInt64 returns the int64 value if v is [IntKind].
+// AsInt64 returns the int64 value if v is [IntKind]. Strings are not
+// parsed.
 func (v Value) AsInt64() (int64, error) {
 	if v.kind != IntKind {
 		return 0, typeMismatchErr(v.kind, "int64")
@@ -275,7 +412,11 @@ func (v Value) AsBool() (bool, error) {
 }
 
 // AsTime returns the time.Time value if v is [TimeKind]. [StringKind]
-// values are parsed as RFC 3339.
+// values are parsed as RFC 3339, or else as a date-time without an
+// offset ("2006-01-02T15:04:05", "T" or a space, optional fraction), a
+// bare date ("2006-01-02") or a time of day ("15:04:05"), the forms
+// TOML calls local date-time, local date and local time; those are
+// read as UTC.
 func (v Value) AsTime() (time.Time, error) {
 	switch v.kind {
 	case TimeKind:
@@ -283,7 +424,7 @@ func (v Value) AsTime() (time.Time, error) {
 		return t, nil
 	case StringKind:
 		s, _ := v.raw.(string)
-		t, err := time.Parse(time.RFC3339, s)
+		t, err := parseTimeText(s, time.RFC3339, true)
 		if err != nil {
 			return time.Time{}, fmt.Errorf("%w: parse time %q: %w", ErrCoercion, s, err)
 		}
@@ -291,6 +432,42 @@ func (v Value) AsTime() (time.Time, error) {
 	default:
 		return time.Time{}, typeMismatchErr(v.kind, "time.Time")
 	}
+}
+
+// timeFallbackLayouts are tried, in order, when a time string does not
+// match the primary layout. The last [timeOfDayLayouts] of them are a
+// time of day, tried only when no layout was chosen.
+var timeFallbackLayouts = [...]string{
+	time.RFC3339Nano,
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02T15:04",
+	"2006-01-02 15:04",
+	time.DateOnly,
+	"15:04:05.999999999",
+	"15:04",
+}
+
+const timeOfDayLayouts = 2
+
+// parseTimeText parses s with layout, then with each of
+// [timeFallbackLayouts], leaving out the time-of-day forms unless
+// timeOfDay. The error is layout's.
+func parseTimeText(s, layout string, timeOfDay bool) (time.Time, error) {
+	t, err := time.Parse(layout, s)
+	if err == nil {
+		return t, nil
+	}
+	alts := timeFallbackLayouts[:]
+	if !timeOfDay {
+		alts = alts[:len(alts)-timeOfDayLayouts]
+	}
+	for _, alt := range alts {
+		if t2, e2 := time.Parse(alt, s); e2 == nil {
+			return t2, nil
+		}
+	}
+	return time.Time{}, err //nolint:wrapcheck // callers wrap with the input.
 }
 
 // AsDuration returns the duration value if v is [DurationKind].
@@ -362,8 +539,10 @@ type RawValue struct {
 //
 //   - *map[string]any or *any receives the decoded payload directly.
 //   - *Value receives the payload wrapped via [NewValue].
-//   - Pointer-to-struct triggers a one-shot struct walk over the
-//     decoded map.
+//   - A pointer to a struct has its fields filled from the top-level
+//     keys, matched by the recon / env / json / yaml / toml tag name or
+//     else the lowercased field name; tag options other than the name
+//     are ignored.
 //
 // The codec comes from [DefaultCodecs] (see [RawValue.DecodeWithCodecs]).
 // Returns wrapped [ErrUnsupportedFormat] when no codec matches

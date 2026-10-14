@@ -17,13 +17,14 @@ type Source interface {
 	//
 	// (Value, false, nil) means "not present"; (Value, true, nil)
 	// means "set" (an empty string is a present value);
-	// (Value, _, err) reports a source-internal error.
+	// (Value, _, err) reports a source-internal error. Snapshot
+	// rebuilds treat an error as "not present"; [PerSourceFor]
+	// reports it.
 	Get(path Path) (Value, bool, error)
 
-	// Keys enumerates every path this source can answer. May be
-	// expensive; the registry caches the result inside snapshots. The
-	// returned slice must not be mutated by callers — sources may
-	// alias internal storage.
+	// Keys enumerates every path this source can answer. The registry
+	// calls it on every snapshot rebuild. The returned slice must not
+	// be mutated by callers — sources may alias internal storage.
 	Keys() []Path
 
 	// Close releases any resources held by the source. Idempotent;
@@ -32,9 +33,11 @@ type Source interface {
 }
 
 // Watcher is an optional [Source] capability. Sources implementing
-// Watcher participate in live reload: the registry subscribes once at
-// construction and fans every emitted [SourceChange] into a single
-// reload pipeline.
+// Watcher participate in live reload: the registry subscribes once when
+// the source is added (at construction, or by [Registry.AddSource] or
+// [Registry.InsertSource]), cancels the subscription on
+// [Registry.RemoveSource], and fans every emitted [SourceChange] into a
+// single reload pipeline.
 //
 // Implementations must honor ctx cancellation by closing the returned
 // channel and returning from any internal goroutine.
@@ -43,8 +46,9 @@ type Watcher interface {
 }
 
 // SourceChange is what a [Watcher] emits when source content may have
-// changed. An empty Keys slice signals "re-read everything"; a non-nil
-// Err signals an unrecoverable refresh failure.
+// changed. Keys may name the changed paths; the registry ignores it and
+// rebuilds the whole snapshot. A non-nil Err reports a refresh failure
+// and is delivered as an [Event] without a reload.
 type SourceChange struct {
 	Keys []Path
 	Err  error

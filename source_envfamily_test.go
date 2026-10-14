@@ -94,7 +94,7 @@ func TestCoerceInterface(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			var dst any
-			if err := coerceInterface(c.v, reflect.ValueOf(&dst).Elem()); err != nil {
+			if err := coerceInterface(c.v, reflect.ValueOf(&dst).Elem(), elemRules{}); err != nil {
 				t.Fatalf("coerceInterface: %v", err)
 			}
 			if !reflect.DeepEqual(dst, c.want) {

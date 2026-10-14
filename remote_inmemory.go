@@ -8,13 +8,13 @@ import (
 	"sync"
 )
 
-// MemoryBackend is the reference [RemoteBackend] implementation
-// shipped for tests and local prototyping. Production backends
-// (etcd, consul, vault) live in separate adapter modules.
+// MemoryBackend is an in-memory [RemoteBackend] for tests and local
+// prototyping.
 //
-// Implements [BackendWatcher] so [RemoteSource] sees a push-style
-// notification path; [Put] / [PutAll] / [Delete] fire every active
-// subscription. Safe for concurrent use.
+// It implements [BackendLister] and [BackendWatcher]: [MemoryBackend.Put],
+// [MemoryBackend.PutAll] and [MemoryBackend.Delete] notify every active
+// subscription. After [MemoryBackend.Close], writes are ignored. Safe
+// for concurrent use.
 type MemoryBackend struct {
 	mu     sync.RWMutex
 	data   map[string]string
@@ -35,9 +35,10 @@ func (m *MemoryBackend) Put(key, value string) {
 		return
 	}
 	m.data[key] = value
-	subs := append([]chan struct{}(nil), m.subs...)
+	// Notify while holding the lock: Close and a watch cancel close the
+	// channels under it, and the sends never block.
+	notifyAll(m.subs)
 	m.mu.Unlock()
-	notifyAll(subs)
 }
 
 // PutAll seeds many keys with a single notification fanout.
@@ -48,9 +49,10 @@ func (m *MemoryBackend) PutAll(kv map[string]string) {
 		return
 	}
 	maps.Copy(m.data, kv)
-	subs := append([]chan struct{}(nil), m.subs...)
+	// Notify while holding the lock: Close and a watch cancel close the
+	// channels under it, and the sends never block.
+	notifyAll(m.subs)
 	m.mu.Unlock()
-	notifyAll(subs)
 }
 
 // Delete removes key. Notifies subscribers only when key existed.
@@ -65,9 +67,10 @@ func (m *MemoryBackend) Delete(key string) {
 		return
 	}
 	delete(m.data, key)
-	subs := append([]chan struct{}(nil), m.subs...)
+	// Notify while holding the lock: Close and a watch cancel close the
+	// channels under it, and the sends never block.
+	notifyAll(m.subs)
 	m.mu.Unlock()
-	notifyAll(subs)
 }
 
 // List implements [RemoteBackend]. Returns matching keys in sorted
@@ -155,4 +158,18 @@ func notifyAll(subs []chan struct{}) {
 		default:
 		}
 	}
+}
+
+// ListValues implements [BackendLister]: every key under prefix with
+// its value.
+func (m *MemoryBackend) ListValues(_ context.Context, prefix string) (map[string]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]string, len(m.data))
+	for k, v := range m.data {
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			out[k] = v
+		}
+	}
+	return out, nil
 }
