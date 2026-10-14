@@ -527,21 +527,15 @@ func TestJSONSchema_TimeIsString(t *testing.T) {
 	}
 }
 
-// YAML and JSON agree on integers above the int64 range, and beyond
-// the uint64 range when the yaml dependency keeps their text.
+// YAML and JSON agree on integers above the int64 range and beyond
+// the uint64 range.
 func TestYAML_BigIntegersMatchJSON(t *testing.T) {
 	y, err := YAML.Decode([]byte("u: 18446744073709551615\nx: 123456789012345678901234567890\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, isFloat := y["u"].(float64); isFloat {
-		t.Skip("the yaml dependency rounds integers above int64 to float64")
-	}
 	if _, ok := y["u"].(uint64); !ok {
 		t.Fatalf("u = %T, want uint64", y["u"])
-	}
-	if _, isFloat := y["x"].(float64); isFloat {
-		t.Skip("the yaml dependency rounds integers beyond uint64 to float64")
 	}
 	r := newRegistry(t, WithoutWatch(), WithSource(NewMapSource("y", y)))
 	var c struct {
@@ -575,9 +569,6 @@ func TestJSONSchema_BigIntegerIsInteger(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, isFloat := m["n"].(float64); isFloat {
-			continue
-		}
 		r := newRegistry(t, WithoutWatch(), WithSource(NewMapSource("c", m)), WithValidator(v))
 		if err := r.Validate(); err != nil {
 			t.Fatalf("%s: %v", c.Name(), err)
@@ -585,8 +576,7 @@ func TestJSONSchema_BigIntegerIsInteger(t *testing.T) {
 	}
 }
 
-// A TOML float out of range is a positioned error, once the toml
-// dependency reports one.
+// A TOML float out of range is a positioned error.
 func TestTOML_FloatOverflowIsPositioned(t *testing.T) {
 	_, err := TOML.Decode([]byte("port = 1e400\n"))
 	if err == nil {
@@ -594,7 +584,7 @@ func TestTOML_FloatOverflowIsPositioned(t *testing.T) {
 	}
 	pe, ok := errors.AsType[PositionError](err)
 	if !ok {
-		t.Skipf("the toml dependency reports no position: %v", err)
+		t.Fatalf("err = %v, want a PositionError", err)
 	}
 	if line, col := pe.Position(); line != 1 || col < 1 {
 		t.Fatalf("position %d:%d (%v)", line, col, err)
@@ -972,9 +962,6 @@ func TestJSONSchema_BigIntegerIsNumber(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, isFloat := m["f"].(float64); isFloat {
-			continue // a yaml dependency that reads such integers as floats
-		}
 		if _, ok := m["f"].(json.Number); !ok {
 			t.Fatalf("%s: f = %#v, want a json.Number", c.Name(), m["f"])
 		}
@@ -1204,11 +1191,8 @@ func TestResolve_HigherParentMapEntryWins(t *testing.T) {
 }
 
 // A YAML float beyond the float64 range is a positioned error, as in
-// JSON, once the yaml dependency reports such numbers.
+// JSON.
 func TestYAML_FloatOverflowIsPositioned(t *testing.T) {
-	if m, _ := YAML.Decode([]byte("x: 123456789012345678901234567890\n")); reflect.TypeOf(m["x"]) == reflect.TypeFor[float64]() {
-		t.Skip("the yaml dependency rounds integers beyond uint64 to float64")
-	}
 	_, err := YAML.Decode([]byte("a: 1\nb: [2, -1e400]\n"))
 	pe, ok := errors.AsType[PositionError](err)
 	if !ok {

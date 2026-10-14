@@ -50,10 +50,6 @@ func TestCodecs_DuplicateKeysFail(t *testing.T) {
 		t.Errorf("JSON decode of a valid document = %#v, %v", m, err)
 	}
 
-	var probe any
-	if yaml.UnmarshalWithOptions([]byte("a: 1\na: 2\n"), &probe, yaml.WithDisallowDuplicateKey()) == nil {
-		t.Skip("the required yaml version does not report duplicate keys when decoding into any")
-	}
 	for _, data := range []string{"a: 1\na: 2\n", "s:\n  a: 1\n  a: 2\n"} {
 		pos, _ := decodePosition(t, YAML, data)
 		if pos.Line != strings.Count(data, "\n") {
