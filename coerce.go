@@ -4,12 +4,18 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// maxFloatBelowInt64Max is 2^63 - 1024, the largest float64 below 2^63. No float64 lies between
+// it and 2^63, and math.MaxInt64 itself rounds up to 2^63 as a float64, so a float64 converts to
+// int64 exactly when it is in [math.MinInt64, maxFloatBelowInt64Max].
+const maxFloatBelowInt64Max = 1<<63 - 1024
 
 // coerce converts v into a value assignable to dest. dest must be
 // addressable and settable. tag supplies per-field options
@@ -763,9 +769,8 @@ func valueAsInt64(v Value) (int64, error) {
 			return 0, err
 		}
 		// Converting a float outside the int64 range gives a different
-		// result on each architecture, so check the range first. 2^63 is
-		// exact as a float64; MaxInt64 is not.
-		if f < -(1<<63) || f >= 1<<63 {
+		// result on each architecture, so check the range first.
+		if f < math.MinInt64 || f > maxFloatBelowInt64Max {
 			return 0, fmt.Errorf("%w: %v overflows int64", ErrCoercion, f)
 		}
 		if f != float64(int64(f)) {

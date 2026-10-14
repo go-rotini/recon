@@ -596,6 +596,13 @@ func TestValueAsInt64_FloatRange(t *testing.T) {
 	if got, err := valueAsInt64(NewValue(float64(1 << 62))); err != nil || got != 1<<62 {
 		t.Errorf("valueAsInt64(2^62) = %d, %v", got, err)
 	}
+	// The bound is the last float64 below 2^63: it converts, and the next float64 up is 2^63.
+	if next := math.Nextafter(maxFloatBelowInt64Max, math.Inf(1)); next != 1<<63 {
+		t.Errorf("the float64 after the bound is %v, want 2^63", next)
+	}
+	if got, err := valueAsInt64(NewValue(float64(maxFloatBelowInt64Max))); err != nil || got != maxFloatBelowInt64Max {
+		t.Errorf("valueAsInt64(2^63-1024) = %d, %v", got, err)
+	}
 }
 
 // On a 32-bit target, an int64 outside the int range is an error, never a truncated int.
