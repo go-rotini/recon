@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"slices"
 	"strconv"
@@ -773,11 +774,18 @@ func valueAsInt64(v Value) (int64, error) {
 		if f < math.MinInt64 || f > maxFloatBelowInt64Max {
 			return 0, fmt.Errorf("%w: %v overflows int64", ErrCoercion, f)
 		}
-		if f != float64(int64(f)) {
+		// big.Float truncates exactly and reports whether anything was cut
+		// off, which a fractional part is; NaN has no integer value at all.
+		if math.IsNaN(f) {
+			return 0, fmt.Errorf("%w: %v has non-integer fractional part", ErrCoercion, f)
+		}
+		var bf big.Float
+		i, acc := bf.SetFloat64(f).Int64()
+		if acc != big.Exact {
 			return 0, fmt.Errorf("%w: %v has non-integer fractional part",
 				ErrCoercion, f)
 		}
-		return int64(f), nil
+		return i, nil
 	case StringKind:
 		s := mustAsString(v)
 		i, err := strconv.ParseInt(s, 0, 64)

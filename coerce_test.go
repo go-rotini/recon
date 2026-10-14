@@ -605,6 +605,39 @@ func TestValueAsInt64_FloatRange(t *testing.T) {
 	}
 }
 
+// valueAsInt64 agrees with a plain int64 conversion on every float that fits: the same integer,
+// and an error exactly where the float has a fractional part.
+func TestValueAsInt64_FloatMatchesConversion(t *testing.T) {
+	check := func(f float64) {
+		t.Helper()
+		got, err := valueAsInt64(NewValue(f))
+		if math.IsNaN(f) || f < math.MinInt64 || f >= 1<<63 {
+			if err == nil {
+				t.Errorf("valueAsInt64(%v) = %d, want an error", f, got)
+			}
+			return
+		}
+		want := int64(f)
+		if float64(want) != f {
+			if !errors.Is(err, ErrCoercion) || !strings.Contains(err.Error(), "non-integer fractional part") {
+				t.Errorf("valueAsInt64(%v) = %d, %v; want a fractional-part error", f, got, err)
+			}
+			return
+		}
+		if err != nil || got != want {
+			t.Errorf("valueAsInt64(%v) = %d, %v; want %d", f, got, err, want)
+		}
+	}
+	for _, f := range []float64{0, math.Copysign(0, -1), 0.5, -0.5, 1, -1, 1.5, -1.5, 1 << 53, 1<<53 + 2,
+		-(1 << 53), 1e18, 1e18 + 0.5, math.SmallestNonzeroFloat64, -math.SmallestNonzeroFloat64,
+		maxFloatBelowInt64Max, math.MinInt64, math.NaN(), math.Inf(1)} {
+		check(f)
+	}
+	for i := range uint64(200_000) {
+		check(math.Float64frombits(i * 0x9E3779B97F4A7C15))
+	}
+}
+
 // On a 32-bit target, an int64 outside the int range is an error, never a truncated int.
 func TestGetInt_Overflow(t *testing.T) {
 	if strconv.IntSize == 64 {
