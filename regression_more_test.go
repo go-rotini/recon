@@ -11,8 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/go-rotini/jsonschema"
 )
 
 // A scalar from a higher-precedence layer leaves a lower layer's keys
@@ -546,16 +544,8 @@ func TestYAML_BigIntegersMatchJSON(t *testing.T) {
 	}
 }
 
-// A uint64-max value passes a type: integer schema, once the jsonschema
-// dependency treats uint64 as an integer.
+// A uint64-max value passes a type: integer schema.
 func TestJSONSchema_BigIntegerIsInteger(t *testing.T) {
-	probe, err := jsonschema.Compile([]byte(`{"type": "integer"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res, err := probe.ValidateValue(uint64(5)); err != nil || !res.Valid {
-		t.Skip("the jsonschema dependency does not accept uint64 values")
-	}
 	v, err := NewJSONSchemaValidator([]byte(`{"properties": {"n": {"type": "integer"}, "s": {"type": "string"}}}`))
 	if err != nil {
 		t.Fatal(err)
