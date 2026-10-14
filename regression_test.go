@@ -138,8 +138,14 @@ func TestSave_OmitsUnscopedEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "s3cr3t") || strings.Contains(out, os.Getenv("HOME")+`"`) {
+	if strings.Contains(out, "s3cr3t") {
 		t.Fatalf("Save wrote unbound environment: %s", out)
+	}
+	// The home directory is in the environment as HOME, or USERPROFILE on Windows.
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if b, _ := json.Marshal(home); strings.Contains(out, string(b)) {
+			t.Fatalf("Save wrote the home directory from the environment: %s", out)
+		}
 	}
 	if !strings.Contains(out, "kept") {
 		t.Fatalf("Save dropped a bound key: %s", out)
