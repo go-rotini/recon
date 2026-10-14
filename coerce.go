@@ -762,6 +762,12 @@ func valueAsInt64(v Value) (int64, error) {
 		if err != nil {
 			return 0, err
 		}
+		// Converting a float outside the int64 range gives a different
+		// result on each architecture, so check the range first. 2^63 is
+		// exact as a float64; MaxInt64 is not.
+		if f < -(1<<63) || f >= 1<<63 {
+			return 0, fmt.Errorf("%w: %v overflows int64", ErrCoercion, f)
+		}
 		if f != float64(int64(f)) {
 			return 0, fmt.Errorf("%w: %v has non-integer fractional part",
 				ErrCoercion, f)

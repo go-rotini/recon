@@ -67,12 +67,18 @@ func (r *Registry) GetString(key string) (string, bool, error) {
 	return s, true, nil
 }
 
-// GetInt returns the value at key as int, converting from int64
-// without an overflow check; on 32-bit targets prefer
-// [Registry.GetInt64].
+// GetInt returns the value at key as int. On a 32-bit target, a value
+// outside the int range is an [ErrCoercion] error; use
+// [Registry.GetInt64] for the full range.
 func (r *Registry) GetInt(key string) (int, bool, error) {
 	i64, ok, err := r.GetInt64(key)
-	return int(i64), ok, err
+	if err != nil {
+		return 0, ok, err
+	}
+	if i64 < math.MinInt || i64 > math.MaxInt {
+		return 0, ok, fmt.Errorf("%w: %d overflows int", ErrCoercion, i64)
+	}
+	return int(i64), ok, nil
 }
 
 // GetInt64 returns the value at key as int64. The value must be
@@ -338,7 +344,13 @@ func coerceValueAny[T any](v Value, zero *T) (any, error) {
 		return b, err
 	case int:
 		i, err := v.AsInt64()
-		return int(i), err
+		if err != nil {
+			return int(0), err
+		}
+		if i < math.MinInt || i > math.MaxInt {
+			return int(0), fmt.Errorf("%w: %d overflows int", ErrCoercion, i)
+		}
+		return int(i), nil
 	case int64:
 		i, err := v.AsInt64()
 		return i, err

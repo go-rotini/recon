@@ -6,6 +6,7 @@ import (
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -578,5 +579,41 @@ func TestCoerce_Uint64AboveMaxInt64(t *testing.T) {
 	}
 	if err := coerce(NewValue("-1"), reflect.ValueOf(&small).Elem(), FieldTag{}); err == nil {
 		t.Fatal("negative string coerced into uint32")
+	}
+}
+
+// A float outside the int64 range is an overflow on every architecture, including 2^63, which
+// some architectures convert to MaxInt64 without a sign of trouble.
+func TestValueAsInt64_FloatRange(t *testing.T) {
+	for _, f := range []float64{1 << 63, 1e19, -1e19, math.Inf(1), math.Inf(-1)} {
+		if _, err := valueAsInt64(NewValue(f)); !errors.Is(err, ErrCoercion) || !strings.Contains(err.Error(), "overflows int64") {
+			t.Errorf("valueAsInt64(%v) = %v, want an int64 overflow", f, err)
+		}
+	}
+	if got, err := valueAsInt64(NewValue(float64(-(1 << 63)))); err != nil || got != math.MinInt64 {
+		t.Errorf("valueAsInt64(-2^63) = %d, %v; want MinInt64", got, err)
+	}
+	if got, err := valueAsInt64(NewValue(float64(1 << 62))); err != nil || got != 1<<62 {
+		t.Errorf("valueAsInt64(2^62) = %d, %v", got, err)
+	}
+}
+
+// On a 32-bit target, an int64 outside the int range is an error, never a truncated int.
+func TestGetInt_Overflow(t *testing.T) {
+	if strconv.IntSize == 64 {
+		t.Skip("int holds every int64 on a 64-bit target")
+	}
+	r, err := New(WithoutWatch(), WithSource(NewMapSource("m", map[string]any{"big": int64(1) << 40, "small": 7})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.GetInt("big"); !errors.Is(err, ErrCoercion) {
+		t.Errorf("GetInt(big) = %v, want ErrCoercion", err)
+	}
+	if _, _, err := Get[int](r, "big"); !errors.Is(err, ErrCoercion) {
+		t.Errorf("Get[int](big) = %v, want ErrCoercion", err)
+	}
+	if v, _, err := r.GetInt("small"); err != nil || v != 7 {
+		t.Errorf("GetInt(small) = %d, %v", v, err)
 	}
 }
