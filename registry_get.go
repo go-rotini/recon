@@ -344,10 +344,13 @@ func coerceValueAny[T any](v Value, zero *T) (any, error) {
 		return i, err
 	case uint:
 		u, err := valueAsUint64(v)
-		if err == nil && u > math.MaxUint {
+		if err != nil {
+			return uint(0), err
+		}
+		if u > math.MaxUint {
 			return uint(0), fmt.Errorf("%w: %d overflows uint", ErrCoercion, u)
 		}
-		return uint(u), err
+		return uint(u), nil
 	case uint64:
 		return valueAsUint64(v)
 	case float64:
