@@ -110,7 +110,7 @@ func (c *Codecs) ByExtension(ext string) (Codec, bool) {
 	if best != nil {
 		return best, true
 	}
-	if name, ok := extToFormat[ext]; ok {
+	if name, ok := extToFormat(ext); ok {
 		if codec, ok := c.byName[name]; ok {
 			return codec, true
 		}

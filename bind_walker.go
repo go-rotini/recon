@@ -486,8 +486,10 @@ func elemBase(t reflect.Type) reflect.Type {
 	}
 }
 
-// secretTypePkg is the import path of the package defining [Secret].
-var secretTypePkg = reflect.TypeFor[Secret[string]]().PkgPath()
+// secretTypePkg is the import path of the package defining [Secret], an
+// alias of env.Secret. A constant: reflecting on Secret[string] at
+// package init would link all of its methods. TestSecretTypePkg pins it.
+const secretTypePkg = "github.com/go-rotini/env" //nolint:gosec // a package path, not a credential
 
 // emitUnknownKeyErrors appends one [*UnknownKeyError] for every
 // snapshot key the bind target did not consult. Scoped to the

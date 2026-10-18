@@ -440,7 +440,7 @@ func (r *Registry) checkSourceNameLocked(name string) error {
 	if name == "" {
 		return fmt.Errorf("%w: source name is empty", ErrInvalidPath)
 	}
-	if _, reserved := reservedSourceNames[name]; reserved {
+	if isReservedSourceName(name) {
 		return fmt.Errorf("%w: %q is a reserved provenance label", ErrSourceConflict, name)
 	}
 	for _, existing := range r.state.sources {

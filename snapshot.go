@@ -16,10 +16,10 @@ const (
 	srcDefault  = "default"  // [Registry.SetDefault] values — lowest precedence
 )
 
-// reservedSourceNames are rejected by [Registry.AddSource].
-var reservedSourceNames = map[string]struct{}{
-	srcExplicit: {},
-	srcDefault:  {},
+// isReservedSourceName reports whether name is a provenance label
+// [Registry.AddSource] rejects.
+func isReservedSourceName(name string) bool {
+	return name == srcExplicit || name == srcDefault
 }
 
 // Snapshot is the immutable, fully-resolved view of a [Registry] at one
