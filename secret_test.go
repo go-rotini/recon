@@ -1,6 +1,7 @@
 package recon
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -31,5 +32,11 @@ func TestSecret_AcceptsEnvSecret(t *testing.T) {
 	var rs Secret[int] = es
 	if rs.Value() != 42 {
 		t.Errorf("aliased Secret lost its Value: %d", rs.Value())
+	}
+}
+
+func TestSecretTypePkg(t *testing.T) {
+	if got := reflect.TypeFor[Secret[string]]().PkgPath(); got != secretTypePkg {
+		t.Errorf("Secret is defined in %q, secretTypePkg says %q", got, secretTypePkg)
 	}
 }

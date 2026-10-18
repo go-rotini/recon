@@ -116,14 +116,14 @@ func yamlDecodeError(err error) error {
 	}
 	if e, ok := errors.AsType[*yaml.TypeError](err); ok && len(e.Errors) == 1 {
 		var line, col int
-		if _, serr := fmt.Sscanf(e.Errors[0], "line %d, column %d:", &line, &col); serr == nil && line > 0 {
+		if scanInts(e.Errors[0], "line %d, column %d:", &line, &col) && line > 0 {
 			return &codecError{format: FormatYAML, err: err, line: line, col: col, msg: stripPositionPrefix(e.Errors[0], FormatYAML)}
 		}
 	}
 	// Any other error that leads with its line, such as an alias-expansion
 	// limit, keeps that line.
 	var line int
-	if _, serr := fmt.Sscanf(err.Error(), "yaml: line %d:", &line); serr == nil && line > 0 {
+	if scanInts(err.Error(), "yaml: line %d:", &line) && line > 0 {
 		return atPosition(FormatYAML, err, line, 0)
 	}
 	return fmt.Errorf("recon: yaml decode: %w", err)

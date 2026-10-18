@@ -16,17 +16,24 @@ const (
 	FormatDotenv = "dotenv"
 )
 
-// extToFormat maps lowercased extensions (with the leading dot) to
-// canonical codec names. [Codecs.ByExtension] consults this map as a
-// fallback when no registered codec advertises the extension.
-var extToFormat = map[string]string{
-	".yaml":  FormatYAML,
-	".yml":   FormatYAML,
-	".toml":  FormatTOML,
-	".json":  FormatJSON,
-	".jsonc": FormatJSONC,
-	".json5": FormatJSONC, // parsed as JSONC; JSON5-only syntax is rejected
-	".env":   FormatDotenv,
+// extToFormat maps a lowercased extension (with the leading dot) to its
+// canonical codec name. [Codecs.ByExtension] consults it as a fallback
+// when no registered codec advertises the extension. A switch, not a
+// map, so nothing is built at package init.
+func extToFormat(ext string) (string, bool) {
+	switch ext {
+	case ".yaml", ".yml":
+		return FormatYAML, true
+	case ".toml":
+		return FormatTOML, true
+	case ".json":
+		return FormatJSON, true
+	case ".jsonc", ".json5": // .json5 is parsed as JSONC; JSON5-only syntax is rejected
+		return FormatJSONC, true
+	case ".env":
+		return FormatDotenv, true
+	}
+	return "", false
 }
 
 // DetectFormat returns the canonical codec name for path's extension.
@@ -37,6 +44,5 @@ func DetectFormat(path string) (string, bool) {
 	if ext == "" {
 		return "", false
 	}
-	f, ok := extToFormat[ext]
-	return f, ok
+	return extToFormat(ext)
 }
