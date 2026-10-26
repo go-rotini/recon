@@ -5,168 +5,33 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version: "1.26.x"
-          check-latest: true
-
-      - name: Test
-        run: make test
-
-      - name: Upload coverage
-        if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: coverage
-          path: test.out
-
-  vet-32bit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version: "1.26.x"
-          check-latest: true
-
-      # The test matrix is 64-bit only; this catches code and tests that
-      # don't compile where int is 32 bits.
-      - name: Vet linux/386 and linux/arm
-        run: |
-          GOOS=linux GOARCH=386 go vet ./...
-          GOOS=linux GOARCH=arm go vet ./...
-
-  acceptance:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version: "1.26.x"
-          check-latest: true
-
-      - name: Acceptance
-        run: make test-acceptance
-
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version: "1.26.x"
-          check-latest: true
-          # This job runs the development tools, which tools.mod pins separately from go.mod,
-          # so a tool bump has to change the cache key too.
-          cache-dependency-path: |
-            go.sum
-            tools.sum
-
-      - name: Lint
-        run: make lint
-
-  fuzz:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version: "1.26.x"
-          check-latest: true
-
-      - name: Fuzz smoke test
-        run: make test-fuzz
-
-  benchmark:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version: "1.26.x"
-          check-latest: true
-
-      - name: Benchmarks
-        run: make test-bench
-
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: benchmarks
-          path: test_bench.out
-
-  race:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version: "1.26.x"
-          check-latest: true
-
-      - name: Race detector
-        run: make test-race
-
-  dependency-review:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
-
-  commitlint:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-
-      # A squash merge makes the pull request's title the commit semantic-release reads, so the
-      # title is checked too. Merge commits (main merged into the branch) are skipped.
-      - name: Check conventional commits
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-          TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          PATTERN='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?(!)?: .+'
-          FAILED=0
-          if ! printf '%s\n' "$TITLE" | grep -qE "$PATTERN"; then
-            echo "BAD pull request title: $TITLE"
-            FAILED=1
-          fi
-          for SHA in $(git rev-list --no-merges "$BASE".."$HEAD"); do
-            MSG=$(git log --format=%s -n1 "$SHA")
-            if ! echo "$MSG" | grep -qE "$PATTERN"; then
-              echo "BAD: $MSG"
-              FAILED=1
-            fi
-          done
-          if [ "$FAILED" -eq 1 ]; then
-            echo "::error::The pull request title or some commits do not follow Conventional Commits (https://www.conventionalcommits.org)"
-            exit 1
-          fi
+  ci:
+    uses: go-rotini/.github/.github/workflows/go-ci.yml@main
+    with:
+      jobs: |
+        - name: test
+          run: make test
+          os: [ubuntu-latest, macos-latest, windows-latest]
+          artifact: test.out
+        - name: vet-32bit
+          run: |
+            GOOS=linux GOARCH=386 go vet ./...
+            GOOS=linux GOARCH=arm go vet ./...
+        - name: acceptance
+          run: make test-acceptance
+        - name: lint
+          run: make lint
+        - name: fuzz
+          run: make test-fuzz
+        - name: benchmark
+          run: make test-bench
+          artifact: test_bench.out
+        - name: race
+          run: make test-race
+          os: [ubuntu-latest, macos-latest, windows-latest]
