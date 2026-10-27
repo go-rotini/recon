@@ -1,8 +1,8 @@
 module github.com/go-rotini/recon
 
-go 1.26
+go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/go-rotini/dotenv v1.0.3
@@ -14,4 +14,4 @@ require (
 	github.com/go-rotini/yaml v1.2.6
 )
 
-require golang.org/x/sys v0.43.0 // indirect
+require golang.org/x/sys v0.49.0 // indirect
