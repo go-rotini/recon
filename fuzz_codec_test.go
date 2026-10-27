@@ -45,13 +45,13 @@ func FuzzCodecDecode(f *testing.F) {
 // every document encoding/json rejects is rejected; a document it
 // accepts is accepted unless recon's stricter rules (an object root, no
 // repeated key, valid UTF-8) apply; and both read the same values,
-// numbers compared as float64.
+// numbers compared as float64, with a null document read as an empty map.
 func FuzzJSONAgainstStdlib(f *testing.F) {
 	for _, s := range []string{
 		`{}`, `{"a": 1}`, `{"a": {"b": [1, -2, 3.5e2, "s", false, null]}}`,
 		`{"n": 9007199254740993, "u": 18446744073709551615, "x": 1e400}`,
 		`{"n": 123456789012345678901234567890}`, `{"0": 10000000000000000, "0000": 1000000000000000000000}`,
-		`{"a": 1, "a": 2}`, `[1]`, `{"a": 1} x`, "{\"a\": \"\xff\"}", `{"a": "\ud800"}`,
+		`{"a": 1, "a": 2}`, `[1]`, `{"a": 1} x`, `null`, " null\n", "{\"a\": \"\xff\"}", `{"a": "\ud800"}`,
 	} {
 		f.Add([]byte(s))
 	}
@@ -69,6 +69,12 @@ func FuzzJSONAgainstStdlib(f *testing.F) {
 				t.Fatalf("recon rejects what encoding/json accepts: %v: %q", err, data)
 			}
 		case stdErr == nil && err == nil:
+			if want == nil { // a null document decodes as an empty map
+				if len(got) != 0 {
+					t.Fatalf("recon decodes a null document as %#v, want an empty map", got)
+				}
+				return
+			}
 			if !jsonSame(got, want) {
 				t.Fatalf("values differ: recon %#v, encoding/json %#v", got, want)
 			}
